@@ -1,3 +1,40 @@
+//! Another LRU cache implementation in rust.
+//! The cache is backed by a [HashMap](https://doc.rust-lang.org/std/collections/struct.HashMap.html) and thus
+//! offers a O(1) time complexity for common operations:
+//! * `get` / `get_mut`
+//! * `put` / `pop`
+//! * `peek` / `peek_mut`
+//!
+//! ## Example
+//!
+//! ```rust
+//!
+//! use clru::CLruCache;
+//!
+//! let mut cache = CLruCache::new(2);
+//! cache.put("apple", 3);
+//! cache.put("banana", 2);
+//!
+//! assert_eq!(*cache.get(&"apple").unwrap(), 3);
+//! assert_eq!(*cache.get(&"banana").unwrap(), 2);
+//! assert!(cache.get(&"pear").is_none());
+//!
+//! assert_eq!(cache.put("banana", 4), Some(2));
+//! assert_eq!(cache.put("pear", 5), None);
+//!
+//! assert_eq!(*cache.get(&"pear").unwrap(), 5);
+//! assert_eq!(*cache.get(&"banana").unwrap(), 4);
+//! assert!(cache.get(&"apple").is_none());
+//!
+//! {
+//!     let v = cache.get_mut(&"banana").unwrap();
+//!     *v = 6;
+//! }
+//!
+//! assert_eq!(*cache.get(&"banana").unwrap(), 6);
+//! ```
+
+#![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
@@ -288,6 +325,7 @@ impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
     }
 }
 
+/// An LRU cache with constant time operations.
 pub struct CLruCache<K, V, S = RandomState> {
     lookup: HashMap<Key<K>, usize, S>,
     storage: FixedSizeList<(Key<K>, V)>,
@@ -486,6 +524,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     }
 }
 
+/// An iterator over the entries of a `CLruCache`.
+///
+/// This `struct` is created by the [`iter`] method on [`CLruCache`][`CLruCache`].
+/// See its documentation for more.
+///
+/// [`iter`]: struct.CLruCache.html#method.iter
+/// [`CLruCache`]: struct.CLruCache.html
 #[derive(Clone, Debug)]
 pub struct CLruCacheIter<'a, K, V> {
     iter: FixedSizeListIter<'a, (Key<K>, V)>,
@@ -515,6 +560,13 @@ impl<'a, K, V> ExactSizeIterator for CLruCacheIter<'a, K, V> {
     }
 }
 
+/// An iterator over mutables entries of a `CLruCache`.
+///
+/// This `struct` is created by the [`iter_mut`] method on [`CLruCache`][`CLruCache`].
+/// See its documentation for more.
+///
+/// [`iter_mut`]: struct.CLruCache.html#method.iter_mut
+/// [`CLruCache`]: struct.CLruCache.html
 pub struct CLruCacheIterMut<'a, K, V> {
     iter: FixedSizeListIterMut<'a, (Key<K>, V)>,
 }
