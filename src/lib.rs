@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 #![deny(warnings)]
 
 use std::borrow::Borrow;
@@ -224,6 +225,7 @@ struct FixedSizeListIterMut<'a, T> {
 impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
     type Item = &'a mut T;
 
+    #[allow(unsafe_code)]
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: self.ptr has been created from a valid mutable reference
         let list: &'a mut FixedSizeList<T> = unsafe { &mut *self.ptr };
@@ -243,6 +245,7 @@ impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
 }
 
 impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
+    #[allow(unsafe_code)]
     fn next_back(&mut self) -> Option<Self::Item> {
         // Safety: self.ptr has been created from a valid mutable reference
         let list: &'a mut FixedSizeList<T> = unsafe { &mut *self.ptr };
@@ -271,14 +274,17 @@ struct Key<K>(Rc<K>);
 struct KeyRef<Q: ?Sized>(Q);
 
 impl<Q: ?Sized> From<&Q> for &KeyRef<Q> {
+    #[allow(unsafe_code)]
     fn from(value: &Q) -> Self {
+        // Safety: this is safe because `KeyRef` is a newtype around Q
+        // and is marked as `#[repr(transparent)]`
         unsafe { std::mem::transmute::<&Q, &KeyRef<Q>>(value) }
     }
 }
 
 impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
     fn borrow(&self) -> &KeyRef<Q> {
-        unsafe { std::mem::transmute::<&Q, &KeyRef<Q>>((&*self.0).borrow()) }
+        (&*self.0).borrow().into()
     }
 }
 
