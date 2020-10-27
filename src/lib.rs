@@ -278,7 +278,7 @@ impl<Q: ?Sized> From<&Q> for &KeyRef<Q> {
     fn from(value: &Q) -> Self {
         // Safety: this is safe because `KeyRef` is a newtype around Q
         // and is marked as `#[repr(transparent)]`
-        unsafe { std::mem::transmute::<&Q, &KeyRef<Q>>(value) }
+        unsafe { &*(value as *const Q as *const KeyRef<Q>) }
     }
 }
 
@@ -471,7 +471,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Returns an iterator visiting all entries in order.
     /// The iterator element type is `(&'a K, &'a V)`.
-    pub fn iter<'a>(&'a self) -> CLruCacheIter<'a, K, V> {
+    pub fn iter(&self) -> CLruCacheIter<'_, K, V> {
         CLruCacheIter {
             iter: self.storage.iter(),
         }
@@ -479,7 +479,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Returns an iterator visiting all entries in order, giving a mutable reference on V.
     /// The iterator element type is `(&'a K, &'a mut V)`.
-    pub fn iter_mut<'a>(&'a mut self) -> CLruCacheIterMut<'a, K, V> {
+    pub fn iter_mut(&mut self) -> CLruCacheIterMut<'_, K, V> {
         CLruCacheIterMut {
             iter: self.storage.iter_mut(),
         }
@@ -523,7 +523,7 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(k, v)| ((&*k).0.borrow(), v))
+        self.iter.next().map(|(k, v)| ((*k).0.borrow(), v))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -533,7 +533,7 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
 
 impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back().map(|(k, v)| ((&*k).0.borrow(), v))
+        self.iter.next_back().map(|(k, v)| ((*k).0.borrow(), v))
     }
 }
 
