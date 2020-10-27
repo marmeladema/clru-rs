@@ -37,3 +37,30 @@ jobs:
           components: miri
       - run: cargo miri test --verbose --no-default-features
       - run: cargo miri test --verbose --all-features
+
+  sanitizer-test:
+
+    name: Test with -Zsanitizer=${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, memory, thread, leak]
+
+    steps:
+    - uses: actions/checkout@v2
+    - uses: hecrj/setup-rust-action@v1
+      with:
+        rust-version: nightly
+        components: rust-src
+    - name: Test with sanitizer
+      env:
+        RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+        RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+        # only needed by asan
+        ASAN_OPTIONS: detect_stack_use_after_return=1
+        # Asan's leak detection occasionally complains
+        # about some small leaks if backtraces are captured,
+        # so ensure they're not
+        RUST_BACKTRACE: 0
+      run: cargo test -Zbuild-std --verbose --target=x86_64-unknown-linux-gnu
