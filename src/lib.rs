@@ -12,26 +12,26 @@
 //! use clru::CLruCache;
 //!
 //! let mut cache = CLruCache::new(2);
-//! cache.put("apple", 3);
-//! cache.put("banana", 2);
+//! cache.put("apple".to_string(), 3);
+//! cache.put("banana".to_string(), 2);
 //!
-//! assert_eq!(*cache.get(&"apple").unwrap(), 3);
-//! assert_eq!(*cache.get(&"banana").unwrap(), 2);
-//! assert!(cache.get(&"pear").is_none());
+//! assert_eq!(cache.get("apple"), Some(&3));
+//! assert_eq!(cache.get("banana"), Some(&2));
+//! assert!(cache.get("pear").is_none());
 //!
-//! assert_eq!(cache.put("banana", 4), Some(2));
-//! assert_eq!(cache.put("pear", 5), None);
+//! assert_eq!(cache.put("banana".to_string(), 4), Some(2));
+//! assert_eq!(cache.put("pear".to_string(), 5), None);
 //!
-//! assert_eq!(*cache.get(&"pear").unwrap(), 5);
-//! assert_eq!(*cache.get(&"banana").unwrap(), 4);
-//! assert!(cache.get(&"apple").is_none());
+//! assert_eq!(cache.get("pear"), Some(&5));
+//! assert_eq!(cache.get("banana"), Some(&4));
+//! assert!(cache.get("apple").is_none());
 //!
 //! {
-//!     let v = cache.get_mut(&"banana").unwrap();
+//!     let v = cache.get_mut("banana").unwrap();
 //!     *v = 6;
 //! }
 //!
-//! assert_eq!(*cache.get(&"banana").unwrap(), 6);
+//! assert_eq!(cache.get("banana"), Some(&6));
 //! ```
 
 #![deny(missing_docs)]
