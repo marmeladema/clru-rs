@@ -539,6 +539,34 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         self.storage.remove(idx).map(|(_, value)| value)
     }
 
+    /// Removes and returns the key and value corresponding to the most recently used item or `None` if the cache is empty.
+    pub fn pop_front(&mut self) -> Option<(K, V)> {
+        if let Some((key, data)) = self.storage.pop_front() {
+            self.lookup.remove(&key).unwrap();
+            let key = match Rc::try_unwrap(key.0) {
+                Ok(key) => key,
+                Err(_) => unreachable!(),
+            };
+            Some((key, data))
+        } else {
+            None
+        }
+    }
+
+    /// Removes and returns the key and value corresponding to the least recently used item or `None` if the cache is empty.
+    pub fn pop_back(&mut self) -> Option<(K, V)> {
+        if let Some((key, data)) = self.storage.pop_back() {
+            self.lookup.remove(&key).unwrap();
+            let key = match Rc::try_unwrap(key.0) {
+                Ok(key) => key,
+                Err(_) => unreachable!(),
+            };
+            Some((key, data))
+        } else {
+            None
+        }
+    }
+
     /// Returns a reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
     /// Unlike `get`, `peek` does not update the LRU list so the key's position will be unchanged.
     pub fn peek<Q: ?Sized>(&self, key: &Q) -> Option<&V>
@@ -974,6 +1002,76 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert!(cache.get(&"apple").is_none());
         assert_eq!(cache.get(&"banana"), Some(&"yellow"));
+    }
+
+    #[test]
+    fn test_pop_front() {
+        let mut cache = CLruCache::new(200);
+
+        for i in 0..75 {
+            cache.put(i, "A");
+        }
+        for i in 0..75 {
+            cache.put(i + 100, "B");
+        }
+        for i in 0..75 {
+            cache.put(i + 200, "C");
+        }
+        assert_eq!(cache.len(), 200);
+
+        for i in 0..75 {
+            assert_eq!(cache.get(&(74 - i + 100)), Some(&"B"));
+        }
+        assert_eq!(cache.get(&25), Some(&"A"));
+
+        assert_eq!(cache.pop_front(), Some((25, "A")));
+        for i in 0..75 {
+            assert_eq!(cache.pop_front(), Some((i + 100, "B")));
+        }
+        for i in 0..75 {
+            assert_eq!(cache.pop_front(), Some((74 - i + 200, "C")));
+        }
+        for i in 0..49 {
+            assert_eq!(cache.pop_front(), Some((74 - i, "A")));
+        }
+        for _ in 0..50 {
+            assert_eq!(cache.pop_front(), None);
+        }
+    }
+
+    #[test]
+    fn test_pop_back() {
+        let mut cache = CLruCache::new(200);
+
+        for i in 0..75 {
+            cache.put(i, "A");
+        }
+        for i in 0..75 {
+            cache.put(i + 100, "B");
+        }
+        for i in 0..75 {
+            cache.put(i + 200, "C");
+        }
+        assert_eq!(cache.len(), 200);
+
+        for i in 0..75 {
+            assert_eq!(cache.get(&(74 - i + 100)), Some(&"B"));
+        }
+        assert_eq!(cache.get(&25), Some(&"A"));
+
+        for i in 26..75 {
+            assert_eq!(cache.pop_back(), Some((i, "A")));
+        }
+        for i in 0..75 {
+            assert_eq!(cache.pop_back(), Some((i + 200, "C")));
+        }
+        for i in 0..75 {
+            assert_eq!(cache.pop_back(), Some((74 - i + 100, "B")));
+        }
+        assert_eq!(cache.pop_back(), Some((25, "A")));
+        for _ in 0..50 {
+            assert_eq!(cache.pop_back(), None);
+        }
     }
 
     #[test]
