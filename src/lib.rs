@@ -44,7 +44,6 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -197,12 +196,12 @@ impl<T> FixedSizeList<T> {
     fn iter_mut(&mut self) -> FixedSizeListIterMut<'_, T> {
         let front = self.front;
         let back = self.back;
+        let len = self.len();
         FixedSizeListIterMut {
-            ptr: self,
+            list: self,
             front,
             back,
-            len: self.len(),
-            _marker: PhantomData,
+            len,
         }
     }
 
@@ -322,11 +321,10 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIter<'a, T> {
 }
 
 struct FixedSizeListIterMut<'a, T> {
-    ptr: *mut FixedSizeList<T>,
+    list: &'a mut FixedSizeList<T>,
     front: usize,
     back: usize,
     len: usize,
-    _marker: PhantomData<&'a mut FixedSizeList<T>>,
 }
 
 impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
@@ -334,11 +332,16 @@ impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
 
     #[allow(unsafe_code)]
     fn next(&mut self) -> Option<Self::Item> {
-        // Safety: self.ptr has been created from a valid mutable reference
-        let list: &'a mut FixedSizeList<T> = unsafe { &mut *self.ptr };
         if self.len > 0 {
             let front = self.front;
-            let node = list.node_mut(front).unwrap();
+            // Safety: This creates a copy of a mutable reference to the list.
+            // This is unsafe in Rust, see "The Rules of References" at
+            // https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html#the-rules-of-references.
+            // We need to do this because self.list only exists as long as the iterator does,
+            // but the iterator's result items must live longer than the iterator itself.
+            // See https://stackoverflow.com/a/30422716/2013738 for details on reference items outliving iterators.
+            let list_ref = unsafe { &mut *(self.list as *mut FixedSizeList<T>) };
+            let node = list_ref.node_mut(front).unwrap();
             self.front = node.next;
             self.len -= 1;
             Some((front, &mut node.data))
@@ -355,11 +358,11 @@ impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
 impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
     #[allow(unsafe_code)]
     fn next_back(&mut self) -> Option<Self::Item> {
-        // Safety: self.ptr has been created from a valid mutable reference
-        let list: &'a mut FixedSizeList<T> = unsafe { &mut *self.ptr };
         if self.len > 0 {
             let back = self.back;
-            let node = list.node_mut(back).unwrap();
+            // Safety: See FixedSizeListIterMut::next above.
+            let list_ref = unsafe { &mut *(self.list as *mut FixedSizeList<T>) };
+            let node = list_ref.node_mut(back).unwrap();
             self.back = node.prev;
             self.len -= 1;
             Some((back, &mut node.data))
