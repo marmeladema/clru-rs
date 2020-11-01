@@ -39,6 +39,7 @@
 #![deny(warnings)]
 
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
@@ -142,26 +143,27 @@ impl<T> FixedSizeList<T> {
         Some((idx, &mut self.nodes[idx].as_mut().unwrap().data))
     }
 
-    // fn push_back(&mut self, data: T) -> Option<(usize, &mut T)> {
-    //     let idx = self.free.pop()?;
-    //     self.nodes[idx] = Some(FixedSizeListNode {
-    //         prev: self.back,
-    //         next: usize::MAX,
-    //         data,
-    //     });
-    //     if let Some(back) = self.node_mut(self.back) {
-    //         back.next = idx;
-    //     }
-    //     if self.node_ref(self.front).is_none() {
-    //         self.front = idx;
-    //     }
-    //     self.front = idx;
-    //     Some((idx, &mut self.nodes[idx].as_mut().unwrap().data))
-    // }
+    #[cfg(test)]
+    fn push_back(&mut self, data: T) -> Option<(usize, &mut T)> {
+        let idx = self.free.pop()?;
+        self.nodes[idx] = Some(FixedSizeListNode {
+            prev: self.back,
+            next: usize::MAX,
+            data,
+        });
+        if let Some(back) = self.node_mut(self.back) {
+            back.next = idx;
+        }
+        if self.node_ref(self.front).is_none() {
+            self.front = idx;
+        }
+        self.back = idx;
+        Some((idx, &mut self.nodes[idx].as_mut().unwrap().data))
+    }
 
-    // fn pop_front(&mut self) -> Option<T> {
-    //     self.remove(self.front)
-    // }
+    fn pop_front(&mut self) -> Option<T> {
+        self.remove(self.front)
+    }
 
     fn pop_back(&mut self) -> Option<T> {
         self.remove(self.back)
@@ -203,6 +205,72 @@ impl<T> FixedSizeList<T> {
             _marker: PhantomData,
         }
     }
+
+    fn reorder(&mut self) {
+        if self.is_empty() {
+            return;
+        }
+
+        let len = self.len();
+        let mut current = 0;
+        while current < len {
+            let front = self.front;
+            let front_data = self.pop_front().unwrap();
+            if front != current {
+                debug_assert!(current < front, "{} < {}", current, front);
+                // We need to free self.nodes[current] if its occupied
+                if let Some(current_node) = self.nodes[current].take() {
+                    if let Some(node) = self.node_mut(current_node.prev) {
+                        node.next = front;
+                    } else {
+                        self.front = front;
+                    }
+                    if let Some(node) = self.node_mut(current_node.next) {
+                        node.prev = front;
+                    } else {
+                        self.back = front;
+                    }
+                    self.nodes[front] = Some(current_node);
+                }
+            }
+            // Assign new front node
+            self.nodes[current] = Some(FixedSizeListNode {
+                prev: current.wrapping_sub(1),
+                next: current + 1,
+                data: front_data,
+            });
+            current += 1;
+        }
+        self.front = 0;
+        self.nodes[len - 1].as_mut().unwrap().next = usize::MAX;
+        self.back = len - 1;
+        self.free.clear();
+        self.free.extend((len..self.capacity()).rev());
+    }
+
+    fn resize(&mut self, capacity: usize) {
+        let len = self.len();
+        let cap = self.capacity();
+        match capacity.cmp(&cap) {
+            Ordering::Less => {
+                self.reorder();
+                let mut nodes = std::mem::take(&mut self.nodes).into_vec();
+                nodes.truncate(capacity);
+                self.nodes = nodes.into_boxed_slice();
+                self.free.clear();
+                self.free.extend((len..self.nodes.len()).rev());
+            }
+            Ordering::Equal => {}
+            Ordering::Greater => {
+                let mut nodes = std::mem::take(&mut self.nodes).into_vec();
+                nodes.extend((cap..capacity).map(|_| None));
+                self.nodes = nodes.into_boxed_slice();
+                self.free.extend((cap..self.nodes.len()).rev());
+            }
+        };
+        debug_assert_eq!(self.len(), len);
+        debug_assert_eq!(self.capacity(), capacity);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -214,14 +282,15 @@ struct FixedSizeListIter<'a, T> {
 }
 
 impl<'a, T> Iterator for FixedSizeListIter<'a, T> {
-    type Item = &'a T;
+    type Item = (usize, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.len > 0 {
-            let node = self.list.node_ref(self.front).unwrap();
+            let front = self.front;
+            let node = self.list.node_ref(front).unwrap();
             self.front = node.next;
             self.len -= 1;
-            Some(&node.data)
+            Some((front, &node.data))
         } else {
             None
         }
@@ -235,10 +304,11 @@ impl<'a, T> Iterator for FixedSizeListIter<'a, T> {
 impl<'a, T> DoubleEndedIterator for FixedSizeListIter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len > 0 {
-            let node = self.list.node_ref(self.back).unwrap();
+            let back = self.back;
+            let node = self.list.node_ref(back).unwrap();
             self.back = node.prev;
             self.len -= 1;
-            Some(&node.data)
+            Some((back, &node.data))
         } else {
             None
         }
@@ -260,17 +330,18 @@ struct FixedSizeListIterMut<'a, T> {
 }
 
 impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
-    type Item = &'a mut T;
+    type Item = (usize, &'a mut T);
 
     #[allow(unsafe_code)]
     fn next(&mut self) -> Option<Self::Item> {
         // Safety: self.ptr has been created from a valid mutable reference
         let list: &'a mut FixedSizeList<T> = unsafe { &mut *self.ptr };
         if self.len > 0 {
-            let node = list.node_mut(self.front).unwrap();
+            let front = self.front;
+            let node = list.node_mut(front).unwrap();
             self.front = node.next;
             self.len -= 1;
-            Some(&mut node.data)
+            Some((front, &mut node.data))
         } else {
             None
         }
@@ -287,10 +358,11 @@ impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
         // Safety: self.ptr has been created from a valid mutable reference
         let list: &'a mut FixedSizeList<T> = unsafe { &mut *self.ptr };
         if self.len > 0 {
-            let node = list.node_mut(self.back).unwrap();
+            let back = self.back;
+            let node = list.node_mut(back).unwrap();
             self.back = node.prev;
             self.len -= 1;
-            Some(&mut node.data)
+            Some((back, &mut node.data))
         } else {
             None
         }
@@ -522,6 +594,21 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             iter: self.storage.iter_mut(),
         }
     }
+
+    /// Resizes the cache.
+    /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
+    pub fn resize(&mut self, capacity: usize) {
+        while capacity < self.storage.len() {
+            if let Some((key, _)) = self.storage.pop_back() {
+                self.lookup.remove(&key).unwrap();
+            }
+        }
+        self.storage.resize(capacity);
+        for i in 0..self.len() {
+            let FixedSizeListNode { data, .. } = self.storage.node_ref(i).unwrap();
+            *self.lookup.get_mut(&data.0).unwrap() = i;
+        }
+    }
 }
 
 /// An iterator over the entries of a `CLruCache`.
@@ -540,7 +627,7 @@ impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(k, v)| (k.0.borrow(), v))
+        self.iter.next().map(|(_, (k, v))| (k.0.borrow(), v))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -550,7 +637,7 @@ impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
 
 impl<'a, K, V> DoubleEndedIterator for CLruCacheIter<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back().map(|(k, v)| (k.0.borrow(), v))
+        self.iter.next_back().map(|(_, (k, v))| (k.0.borrow(), v))
     }
 }
 
@@ -575,7 +662,7 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(k, v)| ((*k).0.borrow(), v))
+        self.iter.next().map(|(_, (k, v))| ((*k).0.borrow(), v))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -585,7 +672,9 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
 
 impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back().map(|(k, v)| ((*k).0.borrow(), v))
+        self.iter
+            .next_back()
+            .map(|(_, (k, v))| ((*k).0.borrow(), v))
     }
 }
 
@@ -626,8 +715,8 @@ mod tests {
         assert_eq!(list.back(), Some(&7));
         assert_eq!(list.back_mut(), Some(&mut 7));
 
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![&7]);
-        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![&7]);
+        assert_eq!(list.iter().collect::<Vec<_>>(), vec![(0, &7)]);
+        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![(0, &7)]);
 
         assert_eq!(list.push_front(5), Some((1, &mut 5)));
 
@@ -640,8 +729,11 @@ mod tests {
         assert_eq!(list.back(), Some(&7));
         assert_eq!(list.back_mut(), Some(&mut 7));
 
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![&5, &7]);
-        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![&7, &5]);
+        assert_eq!(list.iter().collect::<Vec<_>>(), vec![(1, &5), (0, &7)]);
+        assert_eq!(
+            list.iter().rev().collect::<Vec<_>>(),
+            vec![(0, &7), (1, &5)]
+        );
 
         assert_eq!(list.push_front(3), Some((2, &mut 3)));
 
@@ -654,8 +746,14 @@ mod tests {
         assert_eq!(list.back(), Some(&7));
         assert_eq!(list.back_mut(), Some(&mut 7));
 
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![&3, &5, &7]);
-        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![&7, &5, &3]);
+        assert_eq!(
+            list.iter().collect::<Vec<_>>(),
+            vec![(2, &3), (1, &5), (0, &7)]
+        );
+        assert_eq!(
+            list.iter().rev().collect::<Vec<_>>(),
+            vec![(0, &7), (1, &5), (2, &3)]
+        );
 
         list.remove(1);
 
@@ -668,8 +766,11 @@ mod tests {
         assert_eq!(list.back(), Some(&7));
         assert_eq!(list.back_mut(), Some(&mut 7));
 
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![&3, &7]);
-        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![&7, &3]);
+        assert_eq!(list.iter().collect::<Vec<_>>(), vec![(2, &3), (0, &7)]);
+        assert_eq!(
+            list.iter().rev().collect::<Vec<_>>(),
+            vec![(0, &7), (2, &3)]
+        );
 
         list.remove(0);
 
@@ -682,8 +783,8 @@ mod tests {
         assert_eq!(list.back(), Some(&3));
         assert_eq!(list.back_mut(), Some(&mut 3));
 
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![&3]);
-        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![&3]);
+        assert_eq!(list.iter().collect::<Vec<_>>(), vec![(2, &3)]);
+        assert_eq!(list.iter().rev().collect::<Vec<_>>(), vec![(2, &3)]);
 
         list.remove(2);
 
@@ -698,6 +799,28 @@ mod tests {
 
         assert_eq!(list.iter().count(), 0);
         assert_eq!(list.iter().rev().count(), 0);
+    }
+
+    #[test]
+    fn test_fixed_size_list_reorder() {
+        let mut list = FixedSizeList::new(4);
+
+        list.push_back('a');
+        list.push_front('b');
+        list.push_back('c');
+        list.push_front('d');
+
+        assert_eq!(
+            list.iter().collect::<Vec<_>>(),
+            vec![(3, &'d'), (1, &'b'), (0, &'a'), (2, &'c')]
+        );
+
+        list.reorder();
+
+        assert_eq!(
+            list.iter().collect::<Vec<_>>(),
+            vec![(0, &'d'), (1, &'b'), (2, &'a'), (3, &'c')]
+        );
     }
 
     #[test]
@@ -866,6 +989,72 @@ mod tests {
 
         cache.clear();
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_resize_larger() {
+        let mut cache = CLruCache::new(2);
+
+        cache.put(1, "a");
+        cache.put(2, "b");
+
+        cache.resize(3);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 3);
+
+        cache.resize(4);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 4);
+
+        cache.put(3, "c");
+        cache.put(4, "d");
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.capacity(), 4);
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_resize_smaller() {
+        let mut cache = CLruCache::new(4);
+
+        cache.put(1, "a");
+        cache.put(2, "b");
+        cache.put(3, "c");
+        cache.put(4, "d");
+
+        cache.resize(2);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 2);
+        assert!(cache.get(&1).is_none());
+        assert!(cache.get(&2).is_none());
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_resize_equal() {
+        let mut cache = CLruCache::new(4);
+
+        cache.put(1, "a");
+        cache.put(2, "b");
+        cache.put(3, "c");
+        cache.put(4, "d");
+
+        cache.resize(4);
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.capacity(), 4);
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
     }
 
     #[test]
