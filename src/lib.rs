@@ -645,6 +645,25 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             *self.lookup.get_mut(&data.0).unwrap() = i;
         }
     }
+
+    /// Retains only the elements specified by the predicate.
+    /// In other words, remove all pairs `(k, v)` such that `f(&k,&mut v)` returns `false`.
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        let mut front = self.storage.front;
+        while front != usize::MAX {
+            let node = self.storage.node_mut(front).unwrap();
+            let next = node.next;
+            let (ref key, ref mut value) = node.data;
+            if !f(&key.0, value) {
+                self.lookup.remove(&node.data.0).unwrap();
+                self.storage.remove(front);
+            }
+            front = next;
+        }
+    }
 }
 
 /// An iterator over the entries of a `CLruCache`.
@@ -1383,5 +1402,54 @@ mod tests {
     fn test_zero_cap_no_crash() {
         let mut cache = CLruCache::new(0);
         cache.put("key", "value");
+    }
+
+    #[test]
+    fn test_retain() {
+        let mut cache = CLruCache::new(5);
+
+        cache.put("a", 1);
+        cache.put("b", 2);
+        cache.put("c", 3);
+        cache.put("d", 4);
+        cache.put("e", 5);
+
+        assert_eq!(cache.len(), 5);
+
+        cache.retain(|k, v| match *k {
+            "b" | "d" => false,
+            _ => {
+                *v += 1;
+                true
+            }
+        });
+
+        assert_eq!(cache.len(), 3);
+
+        assert_eq!(cache.get("a"), Some(&2));
+        assert_eq!(cache.get("b"), None);
+        assert_eq!(cache.get("c"), Some(&4));
+        assert_eq!(cache.get("d"), None);
+        assert_eq!(cache.get("e"), Some(&6));
+
+        cache.retain(|_, _| true);
+
+        assert_eq!(cache.len(), 3);
+
+        assert_eq!(cache.get("a"), Some(&2));
+        assert_eq!(cache.get("b"), None);
+        assert_eq!(cache.get("c"), Some(&4));
+        assert_eq!(cache.get("d"), None);
+        assert_eq!(cache.get("e"), Some(&6));
+
+        cache.retain(|_, _| false);
+
+        assert_eq!(cache.len(), 0);
+
+        assert_eq!(cache.get("a"), None);
+        assert_eq!(cache.get("b"), None);
+        assert_eq!(cache.get("c"), None);
+        assert_eq!(cache.get("d"), None);
+        assert_eq!(cache.get("e"), None);
     }
 }
