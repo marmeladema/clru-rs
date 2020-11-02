@@ -739,6 +739,53 @@ impl<'a, K, V> ExactSizeIterator for CLruCacheIterMut<'a, K, V> {
     }
 }
 
+/// An owning iterator over the elements of a `CLruCache`.
+///
+/// This `struct` is created by the [`into_iter`] method on [`CLruCache`]
+/// (provided by the `IntoIterator` trait). See its documentation for more.
+///
+/// [`into_iter`]: struct.CLruCache.html#method.into_iter
+pub struct CLruCacheIntoIter<K, V, S> {
+    cache: CLruCache<K, V, S>,
+}
+
+impl<K: Eq + Hash, V, S: BuildHasher> Iterator for CLruCacheIntoIter<K, V, S> {
+    type Item = (K, V);
+
+    #[inline]
+    fn next(&mut self) -> Option<(K, V)> {
+        self.cache.pop_front()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.cache.len(), Some(self.cache.len()))
+    }
+}
+
+impl<K: Eq + Hash, V, S: BuildHasher> DoubleEndedIterator for CLruCacheIntoIter<K, V, S> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.cache.pop_back()
+    }
+}
+
+impl<K: Eq + Hash, V, S: BuildHasher> ExactSizeIterator for CLruCacheIntoIter<K, V, S> {
+    fn len(&self) -> usize {
+        self.size_hint().0
+    }
+}
+
+impl<K: Eq + Hash, V, S: BuildHasher> IntoIterator for CLruCache<K, V, S> {
+    type Item = (K, V);
+    type IntoIter = CLruCacheIntoIter<K, V, S>;
+
+    /// Consumes the cache into an iterator yielding elements by value.
+    #[inline]
+    fn into_iter(self) -> CLruCacheIntoIter<K, V, S> {
+        CLruCacheIntoIter { cache: self }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1451,5 +1498,21 @@ mod tests {
         assert_eq!(cache.get("c"), None);
         assert_eq!(cache.get("d"), None);
         assert_eq!(cache.get("e"), None);
+    }
+
+    #[test]
+    fn test_into_iter() {
+        let mut cache = CLruCache::new(5);
+
+        cache.put("a", 1);
+        cache.put("b", 2);
+        cache.put("c", 3);
+        cache.put("d", 4);
+        cache.put("e", 5);
+
+        assert_eq!(
+            cache.into_iter().collect::<Vec<_>>(),
+            vec![("e", 5), ("d", 4), ("c", 3), ("b", 2), ("a", 1)]
+        );
     }
 }
