@@ -450,7 +450,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Returns a bool indicating whether the cache is full or not.
     pub fn is_full(&self) -> bool {
         debug_assert_eq!(
-            self.lookup.len() == self.lookup.capacity(),
+            self.lookup.len() == self.storage.capacity(),
             self.storage.is_full()
         );
         self.storage.is_full()
@@ -870,6 +870,7 @@ mod tests {
         assert_eq!(cache.capacity(), 2);
         assert_eq!(cache.len(), 2);
         assert!(!cache.is_empty());
+        assert!(cache.is_full());
         assert_eq!(cache.get(&"apple"), Some(&"red"));
         assert_eq!(cache.get(&"banana"), Some(&"yellow"));
     }
@@ -883,6 +884,8 @@ mod tests {
 
         assert_eq!(cache.capacity(), 2);
         assert_eq!(cache.len(), 2);
+        assert!(!cache.is_empty());
+        assert!(cache.is_full());
         assert_eq!(cache.get_mut(&"apple"), Some(&mut "red"));
         assert_eq!(cache.get_mut(&"banana"), Some(&mut "yellow"));
     }
@@ -901,6 +904,8 @@ mod tests {
 
         assert_eq!(cache.capacity(), 2);
         assert_eq!(cache.len(), 2);
+        assert!(!cache.is_empty());
+        assert!(cache.is_full());
         assert_eq!(cache.get_mut(&"apple"), Some(&mut 4));
         assert_eq!(cache.get_mut(&"banana"), Some(&mut 3));
     }
