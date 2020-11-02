@@ -37,6 +37,9 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![deny(warnings)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+#![allow(unreachable_code)]
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -412,28 +415,42 @@ pub struct CLruCache<K, V, S = RandomState> {
 }
 
 impl<K: Eq + Hash, V> CLruCache<K, V> {
-    /// Creates a new LRU Cache that holds at most `capacity` items.
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            lookup: HashMap::with_capacity(capacity),
-            storage: FixedSizeList::new(capacity),
-        }
+    /// Creates a new LRU Cache that holds items up to a total weight of `max_weight`.
+    /// The weight of an item is defined by the calling application.
+    /// Weight can be constant, e.g. every item has a weight of 1. For this special case
+    /// use `CLruCache::put`. Weight can also represent memory usage or any other
+    /// resource measurement defined by the caller. In this case, assign an items's weight via
+    /// `CLruCache::put_with_weight`.
+    pub fn new(max_weight: usize) -> Self {
+        unreachable!();
     }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
-    /// Creates a new LRU Cache that holds at most `capacity` items and uses the provided hash builder to hash keys.
-    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
-        Self {
-            lookup: HashMap::with_capacity_and_hasher(capacity, hash_builder),
-            storage: FixedSizeList::new(capacity),
-        }
+    /// Creates a new LRU Cache that holds items up to a total weight of `max_weight` and
+    /// uses the provided hash builder to hash keys.
+    pub fn with_hasher(max_weight: usize, hash_builder: S) -> Self {
+        unreachable!();
     }
 
     /// Returns the number of key-value pairs that are currently in the the cache.
+    ///
+    /// This operation should computed in *O*(1) time.
     pub fn len(&self) -> usize {
         debug_assert_eq!(self.lookup.len(), self.storage.len());
         self.storage.len()
+    }
+
+    /// Returns the sum of the weights currently in cache.
+    ///
+    /// This operation should computed in *O*(1) time.
+    pub fn weight(&self) -> usize {
+        unreachable!();
+    }
+
+    /// The maximum of the weight this cache can hold.
+    fn max_weight(&self) -> usize {
+        unreachable!();
     }
 
     /// Returns the maximum number of key-value pairs the cache can hold.
@@ -448,6 +465,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     }
 
     /// Returns a bool indicating whether the cache is full or not.
+    /// Full means the sum of the elements' weights equals the max weight.
+    ///
+    /// This API is of limited use since even if the cache is not full,
+    /// that does not mean another element fits in.
     pub fn is_full(&self) -> bool {
         debug_assert_eq!(
             self.lookup.len() == self.storage.capacity(),
@@ -480,10 +501,20 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         self.storage.back_mut().map(|(key, value)| (&*key.0, value))
     }
 
-    /// Puts a key-value pair into cache.
+    /// Puts a key-value pair into cache, assigning a weight of 1.
+    ///
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
+        self.put_with_weight(key, value, 1)
+    }
+
+    /// Puts a key-value pair with the given weight into cache.
+    ///
+    /// If the key already exists in the cache, then it updates the key's weight and value
+    /// and returns the old value.
+    /// Otherwise, `None` is returned.
+    pub fn put_with_weight(&mut self, key: K, value: V, weight: usize) -> Option<V> {
         match self.lookup.entry(Key(Rc::new(key))) {
             Entry::Occupied(mut occ) => {
                 let old = self.storage.remove(*occ.get());
@@ -496,6 +527,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             }
             Entry::Vacant(vac) => {
                 let mut obsolete_key = None;
+                // TODO: remove until self.weight()+weight <= self.max_weight()
                 if self.storage.is_full() {
                     obsolete_key = self.storage.pop_back().map(|(key, _)| key);
                 }
