@@ -1270,6 +1270,12 @@ mod tests {
 
             assert_eq!(iter.len(), 0);
             assert_eq!(iter.next(), None);
+
+            let mut vec: Vec<_> = cache.iter_mut().collect();
+            vec.iter_mut().for_each(|(_, v)| {
+                **v -= 1;
+            });
+            assert_eq!(vec, vec![(&"c", &mut 2), (&"b", &mut 1), (&"a", &mut 0)]);
         }
     }
 
@@ -1310,6 +1316,12 @@ mod tests {
 
             assert_eq!(iter.len(), 0);
             assert_eq!(iter.next_back(), None);
+
+            let mut vec: Vec<_> = cache.iter_mut().rev().collect();
+            vec.iter_mut().for_each(|(_, v)| {
+                **v -= 1;
+            });
+            assert_eq!(vec, vec![(&"a", &mut 0), (&"b", &mut 1), (&"c", &mut 2)]);
         }
     }
 
