@@ -753,6 +753,16 @@ impl<'a, K, V> ExactSizeIterator for CLruCacheIterMut<'a, K, V> {
     }
 }
 
+impl<'a, K, V, S> IntoIterator for &'a mut CLruCache<K, V, S> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = CLruCacheIterMut<'a, K, V>;
+
+    #[inline]
+    fn into_iter(self) -> CLruCacheIterMut<'a, K, V> {
+        self.iter_mut()
+    }
+}
+
 /// An owning iterator over the elements of a `CLruCache`.
 ///
 /// This `struct` is created by the [`into_iter`] method on [`CLruCache`]
@@ -1545,9 +1555,25 @@ mod tests {
             vec![(&"e", &5), (&"d", &4), (&"c", &3), (&"b", &2), (&"a", &1)]
         );
 
+        let mut vec = Vec::new();
+        for (k, v) in &mut cache {
+            *v -= 1;
+            vec.push((k, v));
+        }
+        assert_eq!(
+            vec,
+            vec![
+                (&"e", &mut 4),
+                (&"d", &mut 3),
+                (&"c", &mut 2),
+                (&"b", &mut 1),
+                (&"a", &mut 0)
+            ]
+        );
+
         assert_eq!(
             cache.into_iter().collect::<Vec<_>>(),
-            vec![("e", 5), ("d", 4), ("c", 3), ("b", 2), ("a", 1)]
+            vec![("e", 4), ("d", 3), ("c", 2), ("b", 1), ("a", 0)]
         );
     }
 }
