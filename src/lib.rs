@@ -56,6 +56,11 @@ struct FixedSizeListNode<T> {
 #[derive(Debug)]
 struct FixedSizeList<T> {
     nodes: Box<[Option<FixedSizeListNode<T>>]>,
+    // An un-ordered set of indices that are not in use in `nodes`.
+    // All `None` entries in `nodes` _must_ be listed in `free`.
+    // A `Vec<usize>` was choosen in order to have O(1) complexity
+    // for pop and avoid having to go through `nodes` in order to
+    // to find a free place.
     free: Vec<usize>,
     front: usize,
     back: usize,
