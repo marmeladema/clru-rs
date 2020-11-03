@@ -413,6 +413,24 @@ pub struct CLruCache<K, V, S = RandomState> {
     storage: FixedSizeList<(Key<K>, V)>,
 }
 
+impl<K, V, S> CLruCache<K, V, S> {
+    /// Returns an iterator visiting all entries in order.
+    /// The iterator element type is `(&'a K, &'a V)`.
+    pub fn iter(&self) -> CLruCacheIter<'_, K, V> {
+        CLruCacheIter {
+            iter: self.storage.iter(),
+        }
+    }
+
+    /// Returns an iterator visiting all entries in order, giving a mutable reference on V.
+    /// The iterator element type is `(&'a K, &'a mut V)`.
+    pub fn iter_mut(&mut self) -> CLruCacheIterMut<'_, K, V> {
+        CLruCacheIterMut {
+            iter: self.storage.iter_mut(),
+        }
+    }
+}
+
 impl<K: Eq + Hash, V> CLruCache<K, V> {
     /// Creates a new LRU Cache that holds at most `capacity` items.
     pub fn new(capacity: usize) -> Self {
@@ -617,22 +635,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         self.storage.clear();
     }
 
-    /// Returns an iterator visiting all entries in order.
-    /// The iterator element type is `(&'a K, &'a V)`.
-    pub fn iter(&self) -> CLruCacheIter<'_, K, V> {
-        CLruCacheIter {
-            iter: self.storage.iter(),
-        }
-    }
-
-    /// Returns an iterator visiting all entries in order, giving a mutable reference on V.
-    /// The iterator element type is `(&'a K, &'a mut V)`.
-    pub fn iter_mut(&mut self) -> CLruCacheIterMut<'_, K, V> {
-        CLruCacheIterMut {
-            iter: self.storage.iter_mut(),
-        }
-    }
-
     /// Resizes the cache.
     /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
     pub fn resize(&mut self, capacity: usize) {
@@ -704,6 +706,16 @@ impl<'a, K, V> ExactSizeIterator for CLruCacheIter<'a, K, V> {
     }
 }
 
+impl<'a, K, V, S> IntoIterator for &'a CLruCache<K, V, S> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = CLruCacheIter<'a, K, V>;
+
+    #[inline]
+    fn into_iter(self) -> CLruCacheIter<'a, K, V> {
+        self.iter()
+    }
+}
+
 /// An iterator over mutables entries of a `CLruCache`.
 ///
 /// This `struct` is created by the [`iter_mut`] method on [`CLruCache`][`CLruCache`].
@@ -738,6 +750,16 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
 impl<'a, K, V> ExactSizeIterator for CLruCacheIterMut<'a, K, V> {
     fn len(&self) -> usize {
         self.iter.len()
+    }
+}
+
+impl<'a, K, V, S> IntoIterator for &'a mut CLruCache<K, V, S> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = CLruCacheIterMut<'a, K, V>;
+
+    #[inline]
+    fn into_iter(self) -> CLruCacheIterMut<'a, K, V> {
+        self.iter_mut()
     }
 }
 
@@ -1524,9 +1546,34 @@ mod tests {
         cache.put("d", 4);
         cache.put("e", 5);
 
+        let mut vec = Vec::new();
+        for (k, v) in &cache {
+            vec.push((k, v));
+        }
+        assert_eq!(
+            vec,
+            vec![(&"e", &5), (&"d", &4), (&"c", &3), (&"b", &2), (&"a", &1)]
+        );
+
+        let mut vec = Vec::new();
+        for (k, v) in &mut cache {
+            *v -= 1;
+            vec.push((k, v));
+        }
+        assert_eq!(
+            vec,
+            vec![
+                (&"e", &mut 4),
+                (&"d", &mut 3),
+                (&"c", &mut 2),
+                (&"b", &mut 1),
+                (&"a", &mut 0)
+            ]
+        );
+
         assert_eq!(
             cache.into_iter().collect::<Vec<_>>(),
-            vec![("e", 5), ("d", 4), ("c", 3), ("b", 2), ("a", 1)]
+            vec![("e", 4), ("d", 3), ("c", 2), ("b", 1), ("a", 0)]
         );
     }
 }
