@@ -346,7 +346,8 @@ impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
             // but the iterator's result items must live longer than the iterator itself.
             // See https://stackoverflow.com/a/30422716/2013738 for details on reference items outliving iterators.
             let list_ref = unsafe { &mut *(self.list as *mut FixedSizeList<T>) };
-            let node = list_ref.node_mut(front).unwrap();
+            // Using the `[idx]` syntax here is necessary to only borrow _one_ element at a time and please miri.
+            let node = list_ref.nodes[front].as_mut().unwrap();
             self.front = node.next;
             self.len -= 1;
             Some((front, &mut node.data))
@@ -367,7 +368,8 @@ impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
             let back = self.back;
             // Safety: See FixedSizeListIterMut::next above.
             let list_ref = unsafe { &mut *(self.list as *mut FixedSizeList<T>) };
-            let node = list_ref.node_mut(back).unwrap();
+            // Using the `[idx]` syntax here is necessary to only borrow _one_ element at a time and please miri.
+            let node = list_ref.nodes[back].as_mut().unwrap();
             self.back = node.prev;
             self.len -= 1;
             Some((back, &mut node.data))
