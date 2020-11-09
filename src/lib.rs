@@ -407,10 +407,16 @@ impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct CLruNode<K, V> {
+    key: Key<K>,
+    value: V,
+}
+
 /// An LRU cache with constant time operations.
 pub struct CLruCache<K, V, S = RandomState> {
     lookup: HashMap<Key<K>, usize, S>,
-    storage: FixedSizeList<(Key<K>, V)>,
+    storage: FixedSizeList<CLruNode<K, V>>,
 }
 
 impl<K, V, S> CLruCache<K, V, S> {
@@ -479,25 +485,33 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
     /// Like `peek`, `font` does not update the LRU list so the item's position will be unchanged.
     pub fn front(&self) -> Option<(&K, &V)> {
-        self.storage.front().map(|(key, data)| (&*key.0, data))
+        self.storage
+            .front()
+            .map(|CLruNode { key, value }| (&*key.0, value))
     }
 
     /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
     /// Like `peek`, `font` does not update the LRU list so the item's position will be unchanged.
     pub fn front_mut(&mut self) -> Option<(&K, &mut V)> {
-        self.storage.front_mut().map(|(key, data)| (&*key.0, data))
+        self.storage
+            .front_mut()
+            .map(|CLruNode { key, value }| (&*key.0, value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
     /// Like `peek`, `back` does not update the LRU list so the item's position will be unchanged.
     pub fn back(&self) -> Option<(&K, &V)> {
-        self.storage.back().map(|(key, value)| (&*key.0, value))
+        self.storage
+            .back()
+            .map(|CLruNode { key, value }| (&*key.0, value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
     /// Like `peek`, `back` does not update the LRU list so the item's position will be unchanged.
     pub fn back_mut(&mut self) -> Option<(&K, &mut V)> {
-        self.storage.back_mut().map(|(key, value)| (&*key.0, value))
+        self.storage
+            .back_mut()
+            .map(|CLruNode { key, value }| (&*key.0, value))
     }
 
     /// Puts a key-value pair into cache.
@@ -509,17 +523,23 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let old = self.storage.remove(*occ.get());
                 let (idx, _) = self
                     .storage
-                    .push_front((Key(occ.key().0.clone()), value))
+                    .push_front(CLruNode {
+                        key: Key(occ.key().0.clone()),
+                        value,
+                    })
                     .unwrap();
                 occ.insert(idx);
-                old.map(|(_, data)| data)
+                old.map(|CLruNode { value, .. }| value)
             }
             Entry::Vacant(vac) => {
                 let mut obsolete_key = None;
                 if self.storage.is_full() {
-                    obsolete_key = self.storage.pop_back().map(|(key, _)| key);
+                    obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
                 }
-                if let Some((idx, _)) = self.storage.push_front((Key(vac.key().0.clone()), value)) {
+                if let Some((idx, _)) = self.storage.push_front(CLruNode {
+                    key: Key(vac.key().0.clone()),
+                    value,
+                }) {
                     vac.insert(idx);
                 }
                 if let Some(obsolete_key) = obsolete_key {
@@ -540,7 +560,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         let value = self.storage.remove(idx)?;
-        self.storage.push_front(value).map(|(_, (_, data))| &*data)
+        self.storage
+            .push_front(value)
+            .map(|(_, CLruNode { value, .. })| &*value)
     }
 
     /// Returns a mutable reference to the value of the key in the cache or `None` if it is not present in the cache.
@@ -553,7 +575,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         let value = self.storage.remove(idx)?;
-        self.storage.push_front(value).map(|(_, (_, data))| data)
+        self.storage
+            .push_front(value)
+            .map(|(_, CLruNode { value, .. })| value)
     }
 
     /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
@@ -564,18 +588,18 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     {
         let key: &KeyRef<Q> = key.into();
         let idx = self.lookup.remove(key)?;
-        self.storage.remove(idx).map(|(_, value)| value)
+        self.storage.remove(idx).map(|CLruNode { value, .. }| value)
     }
 
     /// Removes and returns the key and value corresponding to the most recently used item or `None` if the cache is empty.
     pub fn pop_front(&mut self) -> Option<(K, V)> {
-        if let Some((key, data)) = self.storage.pop_front() {
+        if let Some(CLruNode { key, value }) = self.storage.pop_front() {
             self.lookup.remove(&key).unwrap();
             let key = match Rc::try_unwrap(key.0) {
                 Ok(key) => key,
                 Err(_) => unreachable!(),
             };
-            Some((key, data))
+            Some((key, value))
         } else {
             None
         }
@@ -583,13 +607,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Removes and returns the key and value corresponding to the least recently used item or `None` if the cache is empty.
     pub fn pop_back(&mut self) -> Option<(K, V)> {
-        if let Some((key, data)) = self.storage.pop_back() {
+        if let Some(CLruNode { key, value }) = self.storage.pop_back() {
             self.lookup.remove(&key).unwrap();
             let key = match Rc::try_unwrap(key.0) {
                 Ok(key) => key,
                 Err(_) => unreachable!(),
             };
-            Some((key, data))
+            Some((key, value))
         } else {
             None
         }
@@ -604,7 +628,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     {
         let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
-        self.storage.node_ref(idx).map(|node| &node.data.1)
+        self.storage.node_ref(idx).map(|node| &node.data.value)
     }
 
     /// Returns a mutable reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
@@ -616,7 +640,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     {
         let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
-        self.storage.node_mut(idx).map(|node| &mut node.data.1)
+        self.storage.node_mut(idx).map(|node| &mut node.data.value)
     }
 
     /// Returns a bool indicating whether the given key is in the cache.
@@ -639,14 +663,14 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
     pub fn resize(&mut self, capacity: usize) {
         while capacity < self.storage.len() {
-            if let Some((key, _)) = self.storage.pop_back() {
+            if let Some(CLruNode { key, .. }) = self.storage.pop_back() {
                 self.lookup.remove(&key).unwrap();
             }
         }
         self.storage.resize(capacity);
         for i in 0..self.len() {
             let FixedSizeListNode { data, .. } = self.storage.node_ref(i).unwrap();
-            *self.lookup.get_mut(&data.0).unwrap() = i;
+            *self.lookup.get_mut(&data.key).unwrap() = i;
         }
     }
 
@@ -660,9 +684,12 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         while front != usize::MAX {
             let node = self.storage.node_mut(front).unwrap();
             let next = node.next;
-            let (ref key, ref mut value) = node.data;
+            let CLruNode {
+                ref key,
+                ref mut value,
+            } = node.data;
             if !f(&key.0, value) {
-                self.lookup.remove(&node.data.0).unwrap();
+                self.lookup.remove(&node.data.key).unwrap();
                 self.storage.remove(front);
             }
             front = next;
@@ -679,14 +706,16 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 /// [`CLruCache`]: struct.CLruCache.html
 #[derive(Clone, Debug)]
 pub struct CLruCacheIter<'a, K, V> {
-    iter: FixedSizeListIter<'a, (Key<K>, V)>,
+    iter: FixedSizeListIter<'a, CLruNode<K, V>>,
 }
 
 impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(_, (k, v))| (k.0.borrow(), v))
+        self.iter
+            .next()
+            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -696,7 +725,9 @@ impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
 
 impl<'a, K, V> DoubleEndedIterator for CLruCacheIter<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back().map(|(_, (k, v))| (k.0.borrow(), v))
+        self.iter
+            .next_back()
+            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
     }
 }
 
@@ -724,14 +755,16 @@ impl<'a, K, V, S> IntoIterator for &'a CLruCache<K, V, S> {
 /// [`iter_mut`]: struct.CLruCache.html#method.iter_mut
 /// [`CLruCache`]: struct.CLruCache.html
 pub struct CLruCacheIterMut<'a, K, V> {
-    iter: FixedSizeListIterMut<'a, (Key<K>, V)>,
+    iter: FixedSizeListIterMut<'a, CLruNode<K, V>>,
 }
 
 impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(_, (k, v))| ((*k).0.borrow(), v))
+        self.iter
+            .next()
+            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -743,7 +776,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
-            .map(|(_, (k, v))| ((*k).0.borrow(), v))
+            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
     }
 }
 
