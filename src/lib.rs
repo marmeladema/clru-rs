@@ -40,10 +40,10 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -385,8 +385,14 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 struct Key<K>(Rc<K>);
+
+impl<K> Clone for Key<K> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
@@ -411,12 +417,14 @@ impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
 struct CLruNode<K, V> {
     key: Key<K>,
     value: V,
+    weight: usize,
 }
 
 /// An LRU cache with constant time operations.
 pub struct CLruCache<K, V, S = RandomState> {
     lookup: HashMap<Key<K>, usize, S>,
     storage: FixedSizeList<CLruNode<K, V>>,
+    weight: usize,
 }
 
 impl<K, V, S> CLruCache<K, V, S> {
@@ -443,6 +451,7 @@ impl<K: Eq + Hash, V> CLruCache<K, V> {
         Self {
             lookup: HashMap::with_capacity(capacity),
             storage: FixedSizeList::new(capacity),
+            weight: 0,
         }
     }
 }
@@ -453,13 +462,19 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         Self {
             lookup: HashMap::with_capacity_and_hasher(capacity, hash_builder),
             storage: FixedSizeList::new(capacity),
+            weight: 0,
         }
     }
 
-    /// Returns the number of key-value pairs that are currently in the the cache.
+    /// Returns the number of key-value pairs that are currently in the cache.
     pub fn len(&self) -> usize {
         debug_assert_eq!(self.lookup.len(), self.storage.len());
         self.storage.len()
+    }
+
+    /// Returns the total weight of the elements in the cache.
+    pub fn weight(&self) -> usize {
+        self.weight
     }
 
     /// Returns the maximum number of key-value pairs the cache can hold.
@@ -487,7 +502,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn front(&self) -> Option<(&K, &V)> {
         self.storage
             .front()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value, .. }| (&*key.0, value))
     }
 
     /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
@@ -495,7 +510,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn front_mut(&mut self) -> Option<(&K, &mut V)> {
         self.storage
             .front_mut()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value, .. }| (&*key.0, value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
@@ -503,7 +518,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn back(&self) -> Option<(&K, &V)> {
         self.storage
             .back()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value, .. }| (&*key.0, value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
@@ -511,42 +526,53 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn back_mut(&mut self) -> Option<(&K, &mut V)> {
         self.storage
             .back_mut()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value, .. }| (&*key.0, value))
+    }
+
+    /// Puts a key-value pair into cache.
+    /// If the key already exists in the cache, then it updates the key's value and returns the old value.
+    /// Otherwise, `None` is returned.
+    pub fn put_with_weight(
+        &mut self,
+        key: K,
+        value: V,
+        weight: NonZeroUsize,
+    ) -> Result<Option<V>, ()> {
+        let weight = weight.get();
+        if weight > self.capacity() {
+            return Err(());
+        }
+
+        let mut old_value = None;
+        let node = if let Some(mut node) = self.pop_node(&key) {
+            old_value = Some(std::mem::replace(&mut node.value, value));
+            node.weight = weight;
+            node
+        } else {
+            CLruNode {
+                key: Key(Rc::new(key)),
+                value,
+                weight,
+            }
+        };
+        while self.weight() + weight > self.capacity() {
+            self.pop_back();
+        }
+        let (idx, node) = self.storage.push_front(node).unwrap();
+        assert!(self.lookup.insert(node.key.clone(), idx).is_none());
+        self.weight += weight;
+        Ok(old_value)
     }
 
     /// Puts a key-value pair into cache.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
-        match self.lookup.entry(Key(Rc::new(key))) {
-            Entry::Occupied(mut occ) => {
-                let old = self.storage.remove(*occ.get());
-                let (idx, _) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: Key(occ.key().0.clone()),
-                        value,
-                    })
-                    .unwrap();
-                occ.insert(idx);
-                old.map(|CLruNode { value, .. }| value)
-            }
-            Entry::Vacant(vac) => {
-                let mut obsolete_key = None;
-                if self.storage.is_full() {
-                    obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
-                }
-                if let Some((idx, _)) = self.storage.push_front(CLruNode {
-                    key: Key(vac.key().0.clone()),
-                    value,
-                }) {
-                    vac.insert(idx);
-                }
-                if let Some(obsolete_key) = obsolete_key {
-                    self.lookup.remove(&obsolete_key);
-                }
-                None
-            }
+        if self.capacity() > 0 {
+            self.put_with_weight(key, value, NonZeroUsize::new(1).unwrap())
+                .unwrap()
+        } else {
+            None
         }
     }
 
@@ -580,21 +606,34 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             .map(|(_, CLruNode { value, .. })| value)
     }
 
-    /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
-    pub fn pop<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+    fn pop_node<Q: ?Sized>(&mut self, key: &Q) -> Option<CLruNode<K, V>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
         let key: &KeyRef<Q> = key.into();
         let idx = self.lookup.remove(key)?;
-        self.storage.remove(idx).map(|CLruNode { value, .. }| value)
+        let node = self.storage.remove(idx);
+        if let Some(CLruNode { weight, .. }) = node {
+            self.weight -= weight;
+        }
+        node
+    }
+
+    /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
+    pub fn pop<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self.pop_node(key).map(|CLruNode { value, .. }| value)
     }
 
     /// Removes and returns the key and value corresponding to the most recently used item or `None` if the cache is empty.
     pub fn pop_front(&mut self) -> Option<(K, V)> {
-        if let Some(CLruNode { key, value }) = self.storage.pop_front() {
+        if let Some(CLruNode { key, value, weight }) = self.storage.pop_front() {
             self.lookup.remove(&key).unwrap();
+            self.weight -= weight;
             let key = match Rc::try_unwrap(key.0) {
                 Ok(key) => key,
                 Err(_) => unreachable!(),
@@ -607,8 +646,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Removes and returns the key and value corresponding to the least recently used item or `None` if the cache is empty.
     pub fn pop_back(&mut self) -> Option<(K, V)> {
-        if let Some(CLruNode { key, value }) = self.storage.pop_back() {
+        if let Some(CLruNode { key, value, weight }) = self.storage.pop_back() {
             self.lookup.remove(&key).unwrap();
+            self.weight -= weight;
             let key = match Rc::try_unwrap(key.0) {
                 Ok(key) => key,
                 Err(_) => unreachable!(),
@@ -687,6 +727,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             let CLruNode {
                 ref key,
                 ref mut value,
+                ..
             } = node.data;
             if !f(&key.0, value) {
                 self.lookup.remove(&node.data.key).unwrap();
@@ -715,7 +756,7 @@ impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .next()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value, .. })| (key.0.borrow(), value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -727,7 +768,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIter<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value, .. })| (key.0.borrow(), value))
     }
 }
 
@@ -764,7 +805,7 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .next()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value, .. })| (key.0.borrow(), value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -776,7 +817,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value, .. })| (key.0.borrow(), value))
     }
 }
 
@@ -980,6 +1021,12 @@ mod tests {
             list.iter().collect::<Vec<_>>(),
             vec![(0, &'d'), (1, &'b'), (2, &'a'), (3, &'c')]
         );
+    }
+
+    #[test]
+    fn test_size_of_node() {
+        assert_eq!(std::mem::size_of::<CLruNode<String, usize>>(), 24);
+        assert_eq!(std::mem::size_of::<Option<CLruNode<String, usize>>>(), 24);
     }
 
     #[test]
