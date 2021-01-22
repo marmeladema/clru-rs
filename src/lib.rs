@@ -1067,6 +1067,27 @@ mod tests {
     }
 
     #[test]
+    fn test_get_changes_oldest() {
+        let mut cache = CLruCache::new(3);
+
+        assert_eq!(cache.put("apple", "red"), None);
+        assert_eq!(cache.put("banana", "yellow"), None);
+        assert_eq!(cache.put("pear", "green"), None);
+
+        // get oldest => not oldest anymore
+        assert_eq!(cache.get(&"apple"), Some(&"red"));
+
+        // insert new
+        assert_eq!(cache.put("tomato", "red"), None);
+
+        // check lru was removed
+        assert_eq!(cache.get(&"apple"), Some(&"red"));
+        assert!(cache.get(&"banana").is_none());
+        assert_eq!(cache.get(&"pear"), Some(&"green"));
+        assert_eq!(cache.get(&"tomato"), Some(&"red"));
+    }
+
+    #[test]
     fn test_peek() {
         let mut cache = CLruCache::new(2);
 
