@@ -1,4 +1,4 @@
-//! Another LRU cache implementation in rust.
+//! Another LRU cache implementation in Rust.
 //! The cache is backed by a [HashMap](https://doc.rust-lang.org/std/collections/struct.HashMap.html) and thus
 //! offers a O(1) time complexity for common operations:
 //! * `get` / `get_mut`
@@ -57,7 +57,7 @@ struct FixedSizeList<T> {
     nodes: Box<[Option<FixedSizeListNode<T>>]>,
     // An un-ordered set of indices that are not in use in `nodes`.
     // All `None` entries in `nodes` _must_ be listed in `free`.
-    // A `Vec<usize>` was choosen in order to have O(1) complexity
+    // A `Vec<usize>` was chosen in order to have O(1) complexity
     // for pop and avoid having to go through `nodes` in order to
     // to find a free place.
     free: Vec<usize>,
@@ -481,6 +481,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             max_weight: capacity,
         }
     }
+
     /// Creates a new LRU Cache that holds at most `capacity` items, uses the provided hash builder to hash keys,
     /// and has at most `max_weight` total weight.
     pub fn with_hasher_and_weight(capacity: usize, hash_builder: S, max_weight: usize) -> Self {
@@ -819,7 +820,7 @@ impl<'a, K, V, S> IntoIterator for &'a CLruCache<K, V, S> {
     }
 }
 
-/// An iterator over mutables entries of a `CLruCache`.
+/// An iterator over mutable entries of a `CLruCache`.
 ///
 /// This `struct` is created by the [`iter_mut`] method on [`CLruCache`][`CLruCache`].
 /// See its documentation for more.
@@ -1757,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn test_weighted_insert_removes_oldests() {
+    fn test_weighted_insert_removes_oldest() {
         let mut cache = CLruCache::with_weight(10, 7);
 
         assert_eq!(cache.put_with_weight("apple", "red", 2).unwrap(), None);
