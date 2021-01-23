@@ -424,7 +424,11 @@ struct CLruNode<K, V> {
 pub struct CLruCache<K, V, S = RandomState> {
     lookup: HashMap<Key<K>, usize, S>,
     storage: FixedSizeList<CLruNode<K, V>>,
+    /// The current total weight of the items in the cache.
     weight: usize,
+    /// The maximum total weight the items in the cache can have.
+    /// Can be used to implement a size/memory-limited cache.
+    max_weight: usize,
 }
 
 impl<K, V, S> CLruCache<K, V, S> {
@@ -452,6 +456,18 @@ impl<K: Eq + Hash, V> CLruCache<K, V> {
             lookup: HashMap::with_capacity(capacity),
             storage: FixedSizeList::new(capacity),
             weight: 0,
+            max_weight: capacity,
+        }
+    }
+
+    /// Creates a new LRU Cache that holds at most `capacity` items,
+    /// and has at most `max_weight` total weight.
+    pub fn with_weight(capacity: usize, max_weight: usize) -> Self {
+        Self {
+            lookup: HashMap::with_capacity(capacity),
+            storage: FixedSizeList::new(capacity),
+            weight: 0,
+            max_weight,
         }
     }
 }
@@ -463,6 +479,17 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             lookup: HashMap::with_capacity_and_hasher(capacity, hash_builder),
             storage: FixedSizeList::new(capacity),
             weight: 0,
+            max_weight: capacity,
+        }
+    }
+    /// Creates a new LRU Cache that holds at most `capacity` items, uses the provided hash builder to hash keys,
+    /// and has at most `max_weight` total weight.
+    pub fn with_hasher_and_weight(capacity: usize, hash_builder: S, max_weight: usize) -> Self {
+        Self {
+            lookup: HashMap::with_capacity_and_hasher(capacity, hash_builder),
+            storage: FixedSizeList::new(capacity),
+            weight: 0,
+            max_weight,
         }
     }
 
@@ -475,6 +502,11 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Returns the total weight of the elements in the cache.
     pub fn weight(&self) -> usize {
         self.weight
+    }
+
+    /// Returns the maximum weight of the elements in the cache.
+    pub fn max_weight(&self) -> usize {
+        self.max_weight
     }
 
     /// Returns the maximum number of key-value pairs the cache can hold.
@@ -494,7 +526,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             self.lookup.len() == self.storage.capacity(),
             self.storage.is_full()
         );
-        self.storage.is_full()
+        self.storage.is_full() || self.weight == self.max_weight
     }
 
     /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
@@ -539,7 +571,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         weight: NonZeroUsize,
     ) -> Result<Option<V>, ()> {
         let weight = weight.get();
-        if weight > self.capacity() {
+        if weight > self.max_weight {
             return Err(());
         }
 
@@ -555,7 +587,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 weight,
             }
         };
-        while self.weight() + weight > self.capacity() {
+        while self.weight() + weight > self.max_weight {
             self.pop_back();
         }
         let (idx, node) = self.storage.push_front(node).unwrap();
@@ -702,6 +734,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Resizes the cache.
     /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
     pub fn resize(&mut self, capacity: usize) {
+        // Update max_weight, if related to capacity
+        if self.max_weight == self.storage.capacity() {
+            self.max_weight = capacity;
+        }
         while capacity < self.storage.len() {
             if let Some(CLruNode { key, .. }) = self.storage.pop_back() {
                 self.lookup.remove(&key).unwrap();
