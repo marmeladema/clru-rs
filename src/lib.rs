@@ -43,7 +43,6 @@ use std::cmp::Ordering;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
-use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -564,13 +563,10 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Puts a key-value pair into cache.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
-    pub fn put_with_weight(
-        &mut self,
-        key: K,
-        value: V,
-        weight: NonZeroUsize,
-    ) -> Result<Option<V>, ()> {
-        let weight = weight.get();
+    pub fn put_with_weight(&mut self, key: K, value: V, weight: usize) -> Result<Option<V>, ()> {
+        if weight == 0 {
+            return Err(());
+        }
         if weight > self.max_weight {
             return Err(());
         }
@@ -601,8 +597,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Otherwise, `None` is returned.
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
         if self.capacity() > 0 {
-            self.put_with_weight(key, value, NonZeroUsize::new(1).unwrap())
-                .unwrap()
+            self.put_with_weight(key, value, 1).unwrap()
         } else {
             None
         }
