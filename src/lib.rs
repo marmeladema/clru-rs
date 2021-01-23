@@ -38,6 +38,9 @@
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
+pub mod errors;
+
+use crate::errors::Error;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::hash_map::RandomState;
@@ -564,12 +567,12 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Puts a key-value pair into cache.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
-    pub fn put_with_weight(&mut self, key: K, value: V, weight: usize) -> Result<Option<V>, ()> {
+    pub fn put_with_weight(&mut self, key: K, value: V, weight: usize) -> Result<Option<V>, Error> {
         if weight == 0 {
-            return Err(());
+            return Err(Error::WeightZero);
         }
         if weight > self.max_weight {
-            return Err(());
+            return Err(Error::WeightTooLarge(weight, self.max_weight));
         }
 
         let mut old_value = None;

@@ -10,3 +10,4 @@ license = "MIT"
 keywords = ["lru", "cache", "hashmap"]
 
 [dependencies]
+thiserror = "1.0.23"
