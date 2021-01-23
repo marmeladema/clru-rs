@@ -1318,11 +1318,15 @@ mod tests {
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 3);
+        // check max_weight is updated
+        assert_eq!(cache.max_weight(), 3);
 
         cache.resize(4);
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 4);
+        // check max_weight is updated
+        assert_eq!(cache.max_weight(), 4);
 
         cache.put(3, "c");
         cache.put(4, "d");
@@ -1348,6 +1352,8 @@ mod tests {
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 2);
+        // check max_weight is updated
+        assert_eq!(cache.max_weight(), 2);
         assert!(cache.get(&1).is_none());
         assert!(cache.get(&2).is_none());
         assert_eq!(cache.get(&3), Some(&"c"));
@@ -1367,6 +1373,7 @@ mod tests {
 
         assert_eq!(cache.len(), 4);
         assert_eq!(cache.capacity(), 4);
+        assert_eq!(cache.max_weight(), 4);
         assert_eq!(cache.get(&1), Some(&"a"));
         assert_eq!(cache.get(&2), Some(&"b"));
         assert_eq!(cache.get(&3), Some(&"c"));
