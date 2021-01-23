@@ -1762,7 +1762,7 @@ mod tests {
 
     #[test]
     fn test_weighted_insert_removes_oldest() {
-        let mut cache = CLruCache::with_weight(10, 7);
+        let mut cache = CLruCache::with_weight(6, 7);
 
         assert_eq!(cache.put_with_weight("apple", "red", 2).unwrap(), None);
         assert_eq!(cache.put_with_weight("banana", "yellow", 3).unwrap(), None);
