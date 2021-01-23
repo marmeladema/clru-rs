@@ -1879,4 +1879,12 @@ mod tests {
         // not inserted, because no capacity
         assert_eq!(cache.get("key"), None);
     }
+
+    #[test]
+    fn test_weighted_weight_less_than_cap_no_crash() {
+        // Memory inefficient, but works
+        let mut cache = CLruCache::with_weight(10, 5);
+        cache.put_with_weight("key", "value", 5).unwrap();
+        assert_eq!(cache.get("key"), Some(&"value"));
+    }
 }
