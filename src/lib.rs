@@ -466,7 +466,7 @@ impl<K: Eq + Hash, V> CLruCache<K, V> {
             lookup: HashMap::with_capacity(capacity),
             storage: FixedSizeList::new(capacity),
             weight: 0,
-            max_weight,
+            max_weight: if max_weight > 0 { max_weight } else { 1 },
         }
     }
 }
@@ -1686,5 +1686,196 @@ mod tests {
             cache.into_iter().collect::<Vec<_>>(),
             vec![("e", 4), ("d", 3), ("c", 2), ("b", 1), ("a", 0)]
         );
+    }
+
+    #[test]
+    fn test_weighted_insert_and_get() {
+        let mut cache = CLruCache::with_weight(3, 4);
+        assert!(cache.is_empty());
+
+        assert_eq!(cache.put_with_weight("apple", "red", 2).unwrap(), None);
+        assert_eq!(cache.put_with_weight("banana", "yellow", 2).unwrap(), None);
+
+        assert_eq!(cache.capacity(), 3);
+        assert_eq!(cache.max_weight(), 4);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 4);
+        assert!(!cache.is_empty());
+        assert!(cache.is_full()); // because of weight
+        assert_eq!(cache.get(&"apple"), Some(&"red"));
+        assert_eq!(cache.get(&"banana"), Some(&"yellow"));
+    }
+
+    #[test]
+    fn test_zero_weight_fails() {
+        let mut cache = CLruCache::with_weight(3, 4);
+
+        assert!(cache.put_with_weight("apple", "red", 0).is_err());
+    }
+
+    #[test]
+    fn test_greater_than_max_weight_fails() {
+        let mut cache = CLruCache::with_weight(3, 4);
+
+        assert!(cache.put_with_weight("apple", "red", 5).is_err());
+    }
+
+    #[test]
+    fn test_weighted_get_mut_and_update() {
+        let mut cache = CLruCache::with_weight(2, 4);
+
+        cache.put_with_weight("apple", 1, 2).unwrap();
+        cache.put_with_weight("banana", 3, 2).unwrap();
+
+        {
+            let v = cache.get_mut(&"apple").unwrap();
+            *v = 4;
+        }
+
+        assert_eq!(cache.capacity(), 2);
+        assert_eq!(cache.max_weight(), 4);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 4);
+        assert!(!cache.is_empty());
+        assert!(cache.is_full()); // because of capacity
+        assert_eq!(cache.get_mut(&"apple"), Some(&mut 4));
+        assert_eq!(cache.get_mut(&"banana"), Some(&mut 3));
+    }
+
+    #[test]
+    fn test_weighted_insert_update() {
+        let mut cache = CLruCache::with_weight(1, 3);
+
+        assert_eq!(cache.put_with_weight("apple", "red", 2).unwrap(), None);
+        assert_eq!(
+            cache.put_with_weight("apple", "green", 3).unwrap(),
+            Some("red")
+        );
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(&"apple"), Some(&"green"));
+    }
+
+    #[test]
+    fn test_weighted_insert_removes_oldests() {
+        let mut cache = CLruCache::with_weight(10, 7);
+
+        assert_eq!(cache.put_with_weight("apple", "red", 2).unwrap(), None);
+        assert_eq!(cache.put_with_weight("banana", "yellow", 3).unwrap(), None);
+        assert_eq!(cache.put_with_weight("pear", "green", 4).unwrap(), None);
+
+        assert!(cache.get(&"apple").is_none());
+        assert_eq!(cache.get(&"banana"), Some(&"yellow"));
+        assert_eq!(cache.get(&"pear"), Some(&"green"));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 7);
+        assert!(cache.is_full()); // because of weight
+
+        // Even though we inserted "apple" into the cache earlier it has since been removed from
+        // the cache so there is no current value for `insert` to return.
+        assert_eq!(cache.put("apple", "green"), None);
+        assert_eq!(cache.put("tomato", "red"), None);
+
+        assert_eq!(cache.len(), 3); // tomato, apple, pear
+        assert_eq!(cache.weight(), 6); //  1 + 1 + 4
+
+        assert_eq!(cache.get(&"pear"), Some(&"green"));
+        assert_eq!(cache.get(&"apple"), Some(&"green"));
+        assert_eq!(cache.get(&"tomato"), Some(&"red"));
+    }
+
+    #[test]
+    fn test_weighted_resize_larger() {
+        let mut cache = CLruCache::with_weight(2, 4);
+
+        cache.put(1, "a");
+        cache.put(2, "b");
+
+        cache.resize(3);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 3);
+        // resize doesn't change max weight
+        assert_eq!(cache.max_weight(), 4);
+
+        cache.resize(4);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 4);
+        assert_eq!(cache.max_weight(), 4);
+
+        cache.put(3, "c");
+        cache.put(4, "d");
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.capacity(), 4);
+        assert_eq!(cache.max_weight(), 4);
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_weighted_resize_smaller() {
+        let mut cache = CLruCache::with_weight(4, 5);
+
+        cache.put(1, "a");
+        cache.put(2, "b");
+        cache.put(3, "c");
+        cache.put(4, "d");
+
+        cache.resize(2);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 2);
+        // resize doesn't change max weight
+        assert_eq!(cache.max_weight(), 5);
+        assert!(cache.get(&1).is_none());
+        assert!(cache.get(&2).is_none());
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_weighted_resize_equal() {
+        let mut cache = CLruCache::with_weight(4, 10);
+
+        cache.put(1, "a");
+        cache.put(2, "b");
+        cache.put(3, "c");
+        cache.put(4, "d");
+
+        cache.resize(4);
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.capacity(), 4);
+        assert_eq!(cache.max_weight(), 10);
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_weighted_zero_cap_no_crash() {
+        let mut cache = CLruCache::with_weight(0, 10);
+        cache.put("key", "value");
+    }
+
+    #[test]
+    fn test_weighted_zero_weight_no_crash() {
+        let mut cache = CLruCache::with_weight(1, 0);
+        cache.put_with_weight("key", "value", 1).unwrap();
+        // actually inserted, because capacity, and min max_weight is 1
+        assert_eq!(cache.get("key"), Some(&"value"));
+    }
+
+    #[test]
+    fn test_weighted_zero_cap_zero_weight_no_crash() {
+        let mut cache = CLruCache::with_weight(0, 0);
+        cache.put("key", "value");
+        // not inserted, because no capacity
+        assert_eq!(cache.get("key"), None);
     }
 }
