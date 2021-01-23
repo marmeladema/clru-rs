@@ -1,6 +1,6 @@
 [package]
 name = "clru"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["marmeladema <xademax@gmail.com>"]
 edition = "2018"
 description = "An LRU cache implementation with constant time operations"
