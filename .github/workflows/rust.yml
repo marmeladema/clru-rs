@@ -22,7 +22,7 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
     - name: Run clippy
-      run: cargo clippy --verbose --all-targets -- -D clippy::all
+      run: cargo clippy --verbose --all-targets -- -D warnings
     - name: Check code formatting
       run: cargo fmt --verbose --all -- --check
 
