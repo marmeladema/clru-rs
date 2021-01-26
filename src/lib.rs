@@ -454,12 +454,7 @@ impl<K, V, S> CLruCache<K, V, S> {
 impl<K: Eq + Hash, V> CLruCache<K, V> {
     /// Creates a new LRU Cache that holds at most `capacity` items.
     pub fn new(capacity: usize) -> Self {
-        Self {
-            lookup: HashMap::with_capacity(capacity),
-            storage: FixedSizeList::new(capacity),
-            weight: 0,
-            max_weight: capacity,
-        }
+        CLruCache::with_weight(capacity, capacity)
     }
 
     /// Creates a new LRU Cache that holds at most `capacity` items,
@@ -568,6 +563,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put_with_weight(&mut self, key: K, value: V, weight: usize) -> Result<Option<V>, Error> {
+        if self.capacity() == 0 {
+            return Ok(None);
+        }
         if weight == 0 {
             return Err(Error::WeightZero);
         }
@@ -600,11 +598,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
-        if self.capacity() > 0 {
-            self.put_with_weight(key, value, 1).unwrap()
-        } else {
-            None
-        }
+        self.put_with_weight(key, value, 1).unwrap()
     }
 
     /// Returns a reference to the value of the key in the cache or `None` if it is not present in the cache.
