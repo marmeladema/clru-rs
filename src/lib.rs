@@ -9,9 +9,10 @@
 //!
 //! ```rust
 //!
+//! use std::num::NonZeroUsize;
 //! use clru::CLruCache;
 //!
-//! let mut cache = CLruCache::new(2);
+//! let mut cache = CLruCache::new(NonZeroUsize::new(2).unwrap());
 //! cache.put("apple".to_string(), 3);
 //! cache.put("banana".to_string(), 2);
 //!
@@ -44,6 +45,7 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -439,20 +441,20 @@ impl<K, V, S> CLruCache<K, V, S> {
 
 impl<K: Eq + Hash, V> CLruCache<K, V> {
     /// Creates a new LRU Cache that holds at most `capacity` items.
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            lookup: HashMap::with_capacity(capacity),
-            storage: FixedSizeList::new(capacity),
+            lookup: HashMap::with_capacity(capacity.get()),
+            storage: FixedSizeList::new(capacity.get()),
         }
     }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Creates a new LRU Cache that holds at most `capacity` items and uses the provided hash builder to hash keys.
-    pub fn with_hasher(capacity: usize, hash_builder: S) -> Self {
+    pub fn with_hasher(capacity: NonZeroUsize, hash_builder: S) -> Self {
         Self {
-            lookup: HashMap::with_capacity_and_hasher(capacity, hash_builder),
-            storage: FixedSizeList::new(capacity),
+            lookup: HashMap::with_capacity_and_hasher(capacity.get(), hash_builder),
+            storage: FixedSizeList::new(capacity.get()),
         }
     }
 
@@ -847,6 +849,19 @@ impl<K: Eq + Hash, V, S: BuildHasher> IntoIterator for CLruCache<K, V, S> {
 mod tests {
     use super::*;
 
+    #[allow(unsafe_code)]
+    const ONE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
+    #[allow(unsafe_code)]
+    const TWO: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2) };
+    #[allow(unsafe_code)]
+    const THREE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(3) };
+    #[allow(unsafe_code)]
+    const FOUR: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
+    #[allow(unsafe_code)]
+    const FIVE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5) };
+    #[allow(unsafe_code)]
+    const MANY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(200) };
+
     #[test]
     fn test_fixed_size_list() {
         let mut list = FixedSizeList::new(4);
@@ -984,7 +999,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
         assert!(cache.is_empty());
 
         assert_eq!(cache.put("apple", "red"), None);
@@ -1000,7 +1015,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_mut() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", "red");
         cache.put("banana", "yellow");
@@ -1015,7 +1030,7 @@ mod tests {
 
     #[test]
     fn test_get_mut_and_update() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", 1);
         cache.put("banana", 3);
@@ -1035,7 +1050,7 @@ mod tests {
 
     #[test]
     fn test_insert_update() {
-        let mut cache = CLruCache::new(1);
+        let mut cache = CLruCache::new(ONE);
 
         assert_eq!(cache.put("apple", "red"), None);
         assert_eq!(cache.put("apple", "green"), Some("red"));
@@ -1046,7 +1061,7 @@ mod tests {
 
     #[test]
     fn test_insert_removes_oldest() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         assert_eq!(cache.put("apple", "red"), None);
         assert_eq!(cache.put("banana", "yellow"), None);
@@ -1068,7 +1083,7 @@ mod tests {
 
     #[test]
     fn test_peek() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", "red");
         cache.put("banana", "yellow");
@@ -1085,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_peek_mut() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", "red");
         cache.put("banana", "yellow");
@@ -1110,7 +1125,7 @@ mod tests {
 
     #[test]
     fn test_contains() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", "red");
         cache.put("banana", "yellow");
@@ -1123,7 +1138,7 @@ mod tests {
 
     #[test]
     fn test_pop() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", "red");
         cache.put("banana", "yellow");
@@ -1142,7 +1157,7 @@ mod tests {
 
     #[test]
     fn test_pop_front() {
-        let mut cache = CLruCache::new(200);
+        let mut cache = CLruCache::new(MANY);
 
         for i in 0..75 {
             cache.put(i, "A");
@@ -1177,7 +1192,7 @@ mod tests {
 
     #[test]
     fn test_pop_back() {
-        let mut cache = CLruCache::new(200);
+        let mut cache = CLruCache::new(MANY);
 
         for i in 0..75 {
             cache.put(i, "A");
@@ -1212,7 +1227,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put("apple", "red");
         cache.put("banana", "yellow");
@@ -1227,7 +1242,7 @@ mod tests {
 
     #[test]
     fn test_resize_larger() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         cache.put(1, "a");
         cache.put(2, "b");
@@ -1255,7 +1270,7 @@ mod tests {
 
     #[test]
     fn test_resize_smaller() {
-        let mut cache = CLruCache::new(4);
+        let mut cache = CLruCache::new(FOUR);
 
         cache.put(1, "a");
         cache.put(2, "b");
@@ -1274,7 +1289,7 @@ mod tests {
 
     #[test]
     fn test_resize_equal() {
-        let mut cache = CLruCache::new(4);
+        let mut cache = CLruCache::new(FOUR);
 
         cache.put(1, "a");
         cache.put(2, "b");
@@ -1293,7 +1308,7 @@ mod tests {
 
     #[test]
     fn test_iter_forwards() {
-        let mut cache = CLruCache::new(3);
+        let mut cache = CLruCache::new(THREE);
         cache.put("a", 1);
         cache.put("b", 2);
         cache.put("c", 3);
@@ -1338,7 +1353,7 @@ mod tests {
 
     #[test]
     fn test_iter_backwards() {
-        let mut cache = CLruCache::new(3);
+        let mut cache = CLruCache::new(THREE);
         cache.put("a", 1);
         cache.put("b", 2);
         cache.put("c", 3);
@@ -1384,7 +1399,7 @@ mod tests {
 
     #[test]
     fn test_iter_forwards_and_backwards() {
-        let mut cache = CLruCache::new(3);
+        let mut cache = CLruCache::new(THREE);
         cache.put("a", 1);
         cache.put("b", 2);
         cache.put("c", 3);
@@ -1423,7 +1438,7 @@ mod tests {
 
     #[test]
     fn test_iter_clone() {
-        let mut cache = CLruCache::new(3);
+        let mut cache = CLruCache::new(THREE);
         cache.put("a", 1);
         cache.put("b", 2);
 
@@ -1448,7 +1463,7 @@ mod tests {
 
     #[test]
     fn test_that_pop_actually_detaches_node() {
-        let mut cache = CLruCache::new(5);
+        let mut cache = CLruCache::new(FIVE);
 
         cache.put("a", 1);
         cache.put("b", 2);
@@ -1471,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_get_with_borrow() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         let key = String::from("apple");
         cache.put(key, "red");
@@ -1481,7 +1496,7 @@ mod tests {
 
     #[test]
     fn test_get_mut_with_borrow() {
-        let mut cache = CLruCache::new(2);
+        let mut cache = CLruCache::new(TWO);
 
         let key = String::from("apple");
         cache.put(key, "red");
@@ -1506,7 +1521,7 @@ mod tests {
 
         let n = 100;
         for _ in 0..n {
-            let mut cache = CLruCache::new(1);
+            let mut cache = CLruCache::new(ONE);
             for i in 0..n {
                 cache.put(i, DropCounter {});
             }
@@ -1515,14 +1530,8 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_cap_no_crash() {
-        let mut cache = CLruCache::new(0);
-        cache.put("key", "value");
-    }
-
-    #[test]
     fn test_retain() {
-        let mut cache = CLruCache::new(5);
+        let mut cache = CLruCache::new(FIVE);
 
         cache.put("a", 1);
         cache.put("b", 2);
@@ -1571,7 +1580,7 @@ mod tests {
 
     #[test]
     fn test_into_iter() {
-        let mut cache = CLruCache::new(5);
+        let mut cache = CLruCache::new(FIVE);
 
         cache.put("a", 1);
         cache.put("b", 2);
