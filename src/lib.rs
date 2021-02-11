@@ -754,6 +754,75 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             }
         }
     }
+
+    /// Puts a new key-value pair or modify an already existing value.
+    /// If the key already exists in the cache, then `modify_op` supplied function is called.
+    /// Otherwise, `put_op` supplied function is called.
+    /// Returns a mutable reference to the value or an error.
+    ///
+    /// The additional `data` argument can be used to pass extra information
+    /// to the supplied functions. This can useful when both functions need
+    /// to access the same variable.
+    ///
+    /// This is the faillible version of [`CLruCache::put_or_modify`].
+    pub fn try_put_or_modify<
+        T,
+        E,
+        P: FnMut(&K, T) -> Result<V, E>,
+        M: FnMut(&K, &mut V, T) -> Result<(), E>,
+    >(
+        &mut self,
+        key: K,
+        mut put_op: P,
+        mut modify_op: M,
+        data: T,
+    ) -> Result<&mut V, E> {
+        match self.lookup.entry(Key(Rc::new(key))) {
+            Entry::Occupied(mut occ) => {
+                let node = self.storage.remove(*occ.get()).unwrap();
+                // It's fine to unwrap here because:
+                // * the cache capacity is non zero
+                // * the cache cannot be full
+                let (idx, node) = self
+                    .storage
+                    .push_front(CLruNode {
+                        key: Key(occ.key().0.clone()),
+                        value: node.value,
+                    })
+                    .unwrap();
+                occ.insert(idx);
+                match modify_op(&*occ.key().0, &mut node.value, data) {
+                    Ok(()) => Ok(&mut node.value),
+                    Err(err) => Err(err),
+                }
+            }
+            Entry::Vacant(vac) => {
+                let value = match put_op(&*vac.key().0, data) {
+                    Ok(value) => value,
+                    Err(err) => return Err(err),
+                };
+                let mut obsolete_key = None;
+                if self.storage.is_full() {
+                    obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
+                }
+                // It's fine to unwrap here because:
+                // * the cache capacity is non zero
+                // * the cache cannot be full
+                let (idx, node) = self
+                    .storage
+                    .push_front(CLruNode {
+                        key: Key(vac.key().0.clone()),
+                        value,
+                    })
+                    .unwrap();
+                vac.insert(idx);
+                if let Some(obsolete_key) = obsolete_key {
+                    self.lookup.remove(&obsolete_key);
+                }
+                Ok(&mut node.value)
+            }
+        }
+    }
 }
 
 /// An iterator over the entries of a `CLruCache`.
