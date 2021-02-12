@@ -1744,4 +1744,156 @@ mod tests {
             vec![("e", 4), ("d", 3), ("c", 2), ("b", 1), ("a", 0)]
         );
     }
+
+    #[test]
+    fn test_put_or_modify() {
+        let mut cache = CLruCache::new(TWO);
+
+        let put = |key: &&str, base: Option<usize>| base.unwrap_or(0) + key.len();
+
+        let modify = |key: &&str, value: &mut usize, base: Option<usize>| {
+            if key.len() == *value {
+                *value *= 2;
+            } else {
+                *value /= 2;
+            }
+            *value += base.unwrap_or(0);
+        };
+
+        assert_eq!(cache.put_or_modify("a", put, modify, None), &1);
+        assert_eq!(cache.len(), 1);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &1)));
+        assert_eq!(iter.next(), None);
+
+        assert_eq!(cache.put_or_modify("b", put, modify, Some(3)), &4);
+        assert_eq!(cache.len(), 2);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"b", &4)));
+        assert_eq!(iter.next(), Some((&"a", &1)));
+        assert_eq!(iter.next(), None);
+
+        assert_eq!(cache.put_or_modify("a", put, modify, None), &2);
+        assert_eq!(cache.len(), 2);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &2)));
+        assert_eq!(iter.next(), Some((&"b", &4)));
+        assert_eq!(iter.next(), None);
+
+        assert_eq!(cache.put_or_modify("b", put, modify, Some(3)), &5);
+        assert_eq!(cache.len(), 2);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"b", &5)));
+        assert_eq!(iter.next(), Some((&"a", &2)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_panic_in_put_or_modify() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut cache = CLruCache::new(TWO);
+
+        let put = |_: &&str, value: usize| value;
+
+        let modify = |_: &&str, old: &mut usize, new: usize| {
+            panic!("old value: {:?} / new value: {:?}", old, new);
+        };
+
+        assert_eq!(cache.put_or_modify("a", put, modify, 3), &3);
+
+        assert_eq!(cache.put_or_modify("b", put, modify, 5), &5);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"b", &5)));
+        assert_eq!(iter.next(), Some((&"a", &3)));
+        assert_eq!(iter.next(), None);
+
+        // A panic in the modify closure will move the
+        // key at the top of the cache.
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            cache.put_or_modify("a", put, modify, 7);
+        }))
+        .is_err());
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &3)));
+        assert_eq!(iter.next(), Some((&"b", &5)));
+        assert_eq!(iter.next(), None);
+
+        let put = |_: &&str, value: usize| panic!("value: {:?}", value);
+
+        // A panic in the put closure won't have any
+        // any impact on the cache.
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            cache.put_or_modify("c", put, modify, 7);
+        }))
+        .is_err());
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &3)));
+        assert_eq!(iter.next(), Some((&"b", &5)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_try_put_or_modify() {
+        let mut cache = CLruCache::new(TWO);
+
+        let put = |_: &&str, value: usize| {
+            if value % 2 == 0 {
+                Ok(value)
+            } else {
+                Err(value)
+            }
+        };
+
+        let modify = |_: &&str, old: &mut usize, new: usize| {
+            if new % 2 == 0 {
+                *old = new;
+                Ok(())
+            } else {
+                Err(new)
+            }
+        };
+
+        assert_eq!(cache.try_put_or_modify("a", put, modify, 2), Ok(&mut 2));
+        assert_eq!(cache.len(), 1);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &2)));
+        assert_eq!(iter.next(), None);
+
+        assert_eq!(cache.try_put_or_modify("b", put, modify, 4), Ok(&mut 4));
+        assert_eq!(cache.len(), 2);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"b", &4)));
+        assert_eq!(iter.next(), Some((&"a", &2)));
+        assert_eq!(iter.next(), None);
+
+        // An error in the modify closure will move the
+        // key at the top of the cache.
+        assert_eq!(cache.try_put_or_modify("a", put, modify, 3), Err(3));
+        assert_eq!(cache.len(), 2);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &2)));
+        assert_eq!(iter.next(), Some((&"b", &4)));
+        assert_eq!(iter.next(), None);
+
+        // An error in the put closure won't have any
+        // any impact on the cache.
+        assert_eq!(cache.try_put_or_modify("c", put, modify, 3), Err(3));
+        assert_eq!(cache.len(), 2);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&"a", &2)));
+        assert_eq!(iter.next(), Some((&"b", &4)));
+        assert_eq!(iter.next(), None);
+    }
 }
