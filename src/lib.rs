@@ -57,7 +57,8 @@ struct FixedSizeListNode<T> {
 
 #[derive(Debug)]
 struct FixedSizeList<T> {
-    nodes: Box<[Option<FixedSizeListNode<T>>]>,
+    capacity: usize,
+    nodes: Vec<Option<FixedSizeListNode<T>>>,
     // An un-ordered set of indices that are not in use in `nodes`.
     // All `None` entries in `nodes` _must_ be listed in `free`.
     // A `Vec<usize>` was choosen in order to have O(1) complexity
@@ -71,19 +72,16 @@ struct FixedSizeList<T> {
 impl<T> FixedSizeList<T> {
     fn new(capacity: usize) -> Self {
         Self {
-            nodes: {
-                let mut vec = Vec::with_capacity(capacity);
-                vec.resize_with(capacity, Default::default);
-                vec.into_boxed_slice()
-            },
-            free: (0..capacity).rev().collect(),
+            capacity,
+            nodes: Vec::new(),
+            free: Vec::new(),
             front: usize::MAX,
             back: usize::MAX,
         }
     }
 
     fn capacity(&self) -> usize {
-        self.nodes.len()
+        self.capacity
     }
 
     fn len(&self) -> usize {
@@ -99,13 +97,22 @@ impl<T> FixedSizeList<T> {
     }
 
     fn clear(&mut self) {
-        self.nodes.iter_mut().for_each(|node| *node = None);
+        self.nodes.clear();
         self.free.clear();
-        for i in 0..self.capacity() {
-            self.free.push(i);
-        }
         self.front = usize::MAX;
         self.back = usize::MAX;
+    }
+
+    fn next(&mut self) -> Option<usize> {
+        if self.is_full() {
+            None
+        } else if self.free.is_empty() {
+            let len = self.len();
+            self.nodes.push(None);
+            Some(len)
+        } else {
+            self.free.pop()
+        }
     }
 
     fn node_ref(&self, idx: usize) -> Option<&FixedSizeListNode<T>> {
@@ -133,7 +140,7 @@ impl<T> FixedSizeList<T> {
     }
 
     fn push_front(&mut self, data: T) -> Option<(usize, &mut T)> {
-        let idx = self.free.pop()?;
+        let idx = self.next()?;
         self.nodes[idx] = Some(FixedSizeListNode {
             prev: usize::MAX,
             next: self.front,
@@ -151,7 +158,7 @@ impl<T> FixedSizeList<T> {
 
     #[cfg(test)]
     fn push_back(&mut self, data: T) -> Option<(usize, &mut T)> {
-        let idx = self.free.pop()?;
+        let idx = self.next()?;
         self.nodes[idx] = Some(FixedSizeListNode {
             prev: self.back,
             next: usize::MAX,
@@ -251,7 +258,7 @@ impl<T> FixedSizeList<T> {
         self.nodes[len - 1].as_mut().unwrap().next = usize::MAX;
         self.back = len - 1;
         self.free.clear();
-        self.free.extend((len..self.capacity()).rev());
+        self.free.extend((len..self.nodes.len()).rev());
     }
 
     fn resize(&mut self, capacity: usize) {
@@ -260,18 +267,19 @@ impl<T> FixedSizeList<T> {
         match capacity.cmp(&cap) {
             Ordering::Less => {
                 self.reorder();
-                let mut nodes = std::mem::take(&mut self.nodes).into_vec();
+                let mut nodes = std::mem::take(&mut self.nodes);
                 nodes.truncate(capacity);
-                self.nodes = nodes.into_boxed_slice();
+                self.nodes = nodes;
                 self.free.clear();
-                self.free.extend((len..self.nodes.len()).rev());
+                self.capacity = capacity;
             }
             Ordering::Equal => {}
             Ordering::Greater => {
-                let mut nodes = std::mem::take(&mut self.nodes).into_vec();
+                let mut nodes = std::mem::take(&mut self.nodes);
                 nodes.extend((cap..capacity).map(|_| None));
-                self.nodes = nodes.into_boxed_slice();
+                self.nodes = nodes;
                 self.free.extend((cap..self.nodes.len()).rev());
+                self.capacity = capacity;
             }
         };
         debug_assert_eq!(self.len(), len);
@@ -416,6 +424,7 @@ struct CLruNode<K, V> {
 }
 
 /// An LRU cache with constant time operations.
+// #[derive(Debug)]
 pub struct CLruCache<K, V, S = RandomState> {
     lookup: HashMap<Key<K>, usize, S>,
     storage: FixedSizeList<CLruNode<K, V>>,
@@ -523,6 +532,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         match self.lookup.entry(Key(Rc::new(key))) {
             Entry::Occupied(mut occ) => {
                 let old = self.storage.remove(*occ.get());
+                // It's fine to unwrap here because:
+                // * the cache capacity is non zero
+                // * the cache cannot be full
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
@@ -538,12 +550,17 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 if self.storage.is_full() {
                     obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
                 }
-                if let Some((idx, _)) = self.storage.push_front(CLruNode {
-                    key: Key(vac.key().0.clone()),
-                    value,
-                }) {
-                    vac.insert(idx);
-                }
+                // It's fine to unwrap here because:
+                // * the cache capacity is non zero
+                // * the cache cannot be full
+                let (idx, _) = self
+                    .storage
+                    .push_front(CLruNode {
+                        key: Key(vac.key().0.clone()),
+                        value,
+                    })
+                    .unwrap();
+                vac.insert(idx);
                 if let Some(obsolete_key) = obsolete_key {
                     self.lookup.remove(&obsolete_key);
                 }
