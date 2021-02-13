@@ -81,6 +81,19 @@ impl<T> FixedSizeList<T> {
         }
     }
 
+    fn with_memory(capacity: usize, mut reserve: usize) -> Self {
+        if reserve > capacity {
+            reserve = capacity;
+        }
+        Self {
+            capacity,
+            nodes: Vec::with_capacity(reserve),
+            free: Vec::new(),
+            front: usize::MAX,
+            back: usize::MAX,
+        }
+    }
+
     fn capacity(&self) -> usize {
         self.capacity
     }
@@ -478,21 +491,52 @@ impl<K, V, S> CLruCache<K, V, S> {
 }
 
 impl<K: Eq + Hash, V> CLruCache<K, V> {
-    /// Creates a new LRU Cache that holds at most `capacity` items.
+    /// Creates a new LRU Cache that holds at most `capacity` elements.
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            lookup: HashMap::with_capacity(capacity.get()),
+            lookup: HashMap::new(),
             storage: FixedSizeList::new(capacity.get()),
+        }
+    }
+
+    /// Creates a new LRU Cache that holds at most `capacity` elements
+    /// and pre-allocate memory to order to hold at least `reserve` elements
+    /// without reallocating.
+    pub fn with_memory(capacity: NonZeroUsize, mut reserve: usize) -> Self {
+        if reserve > capacity.get() {
+            reserve = capacity.get();
+        }
+        Self {
+            lookup: HashMap::with_capacity(reserve),
+            storage: FixedSizeList::with_memory(capacity.get(), reserve),
         }
     }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
-    /// Creates a new LRU Cache that holds at most `capacity` items and uses the provided hash builder to hash keys.
+    /// Creates a new LRU Cache that holds at most `capacity` elements
+    /// and uses the provided hash builder to hash keys.
     pub fn with_hasher(capacity: NonZeroUsize, hash_builder: S) -> Self {
         Self {
-            lookup: HashMap::with_capacity_and_hasher(capacity.get(), hash_builder),
+            lookup: HashMap::with_hasher(hash_builder),
             storage: FixedSizeList::new(capacity.get()),
+        }
+    }
+
+    /// Creates a new LRU Cache that holds at most `capacity` elements
+    /// and pre-allocate memory to order to hold at least `reserve` elements
+    /// without reallocating and also uses the provided hash builder to hash keys.
+    pub fn with_memory_and_hasher(
+        capacity: NonZeroUsize,
+        mut reserve: usize,
+        hash_builder: S,
+    ) -> Self {
+        if reserve > capacity.get() {
+            reserve = capacity.get();
+        }
+        Self {
+            lookup: HashMap::with_capacity_and_hasher(reserve, hash_builder),
+            storage: FixedSizeList::with_memory(capacity.get(), reserve),
         }
     }
 
