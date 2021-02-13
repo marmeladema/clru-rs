@@ -46,6 +46,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
 use std::num::NonZeroUsize;
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -211,12 +212,7 @@ impl<T> FixedSizeList<T> {
         let front = self.front;
         let back = self.back;
         let len = self.len();
-        FixedSizeListIterMut {
-            list: self,
-            front,
-            back,
-            len,
-        }
+        FixedSizeListIterMut::new(&mut self.nodes, front, back, len)
     }
 
     fn reorder(&mut self) {
@@ -336,10 +332,30 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIter<'a, T> {
 }
 
 struct FixedSizeListIterMut<'a, T> {
-    list: &'a mut FixedSizeList<T>,
+    ptr: NonNull<Option<FixedSizeListNode<T>>>,
     front: usize,
     back: usize,
     len: usize,
+    _marker: std::marker::PhantomData<&'a mut T>,
+}
+
+impl<'a, T> FixedSizeListIterMut<'a, T> {
+    #[allow(unsafe_code)]
+    fn new(
+        slice: &'a mut [Option<FixedSizeListNode<T>>],
+        front: usize,
+        back: usize,
+        len: usize,
+    ) -> Self {
+        let ptr = slice.as_mut_ptr();
+        Self {
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            front,
+            back,
+            len,
+            _marker: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
@@ -349,15 +365,19 @@ impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.len > 0 {
             let front = self.front;
-            // Safety: This creates a copy of a mutable reference to the list.
-            // This is unsafe in Rust, see "The Rules of References" at
-            // https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html#the-rules-of-references.
-            // We need to do this because self.list only exists as long as the iterator does,
-            // but the iterator's result items must live longer than the iterator itself.
-            // See https://stackoverflow.com/a/30422716/2013738 for details on reference items outliving iterators.
-            let list_ref = unsafe { &mut *(self.list as *mut FixedSizeList<T>) };
-            // Using the `[idx]` syntax here is necessary to only borrow _one_ element at a time and please miri.
-            let node = list_ref.nodes[front].as_mut().unwrap();
+
+            // Safety:
+            // * `self.ptr` is a valid non null pointer since it can only be created through `FixedSizeListIterMut::new`.
+            // * `front` is guaranteed to be a valid index within the slice pointed to by `self.ptr`.
+            // Notes: implementation is inspired by the iterator over mutable slice from the standard rust library
+            // * https://doc.rust-lang.org/src/core/slice/iter.rs.html
+            // * https://doc.rust-lang.org/src/core/slice/iter/macros.rs.html
+            let node_ref = unsafe {
+                let ptr = NonNull::new_unchecked(self.ptr.as_ptr().add(front)).as_ptr();
+                &mut *ptr
+            };
+
+            let node = node_ref.as_mut().unwrap();
             self.front = node.next;
             self.len -= 1;
             Some((front, &mut node.data))
@@ -376,10 +396,19 @@ impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len > 0 {
             let back = self.back;
-            // Safety: See FixedSizeListIterMut::next above.
-            let list_ref = unsafe { &mut *(self.list as *mut FixedSizeList<T>) };
-            // Using the `[idx]` syntax here is necessary to only borrow _one_ element at a time and please miri.
-            let node = list_ref.nodes[back].as_mut().unwrap();
+
+            // Safety:
+            // * `self.ptr` is a valid non null pointer since it can only be created through `FixedSizeListIterMut::new`.
+            // * `back` is guaranteed to be a valid index within the slice pointed to by `self.ptr`.
+            // Notes: implementation is inspired by the iterator over mutable slice from the standard rust library
+            // * https://doc.rust-lang.org/src/core/slice/iter.rs.html
+            // * https://doc.rust-lang.org/src/core/slice/iter/macros.rs.html
+            let node_ref = unsafe {
+                let ptr = NonNull::new_unchecked(self.ptr.as_ptr().add(back)).as_ptr();
+                &mut *ptr
+            };
+
+            let node = node_ref.as_mut().unwrap();
             self.back = node.prev;
             self.len -= 1;
             Some((back, &mut node.data))
@@ -424,7 +453,7 @@ struct CLruNode<K, V> {
 }
 
 /// An LRU cache with constant time operations.
-// #[derive(Debug)]
+#[derive(Debug)]
 pub struct CLruCache<K, V, S = RandomState> {
     lookup: HashMap<Key<K>, usize, S>,
     storage: FixedSizeList<CLruNode<K, V>>,
