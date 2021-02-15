@@ -460,41 +460,132 @@ struct CLruNode<K, V> {
     value: V,
 }
 
-/// An LRU cache with constant time operations.
-#[derive(Debug)]
-pub struct CLruCache<K, V, S = RandomState> {
-    lookup: HashMap<Key<K>, usize, S>,
-    storage: FixedSizeList<CLruNode<K, V>>,
+/// Trait used to retrieve the weight of a value.
+pub trait WeightScale<V> {
+    /// Returns the weight of a value.
+    fn weight(&self, value: &V) -> usize;
 }
 
-impl<K, V, S> CLruCache<K, V, S> {
-    /// Returns an iterator visiting all entries in order.
-    /// The iterator element type is `(&'a K, &'a V)`.
-    pub fn iter(&self) -> CLruCacheIter<'_, K, V> {
-        CLruCacheIter {
-            iter: self.storage.iter(),
+/// A scale that always return 0.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ZeroWeightScale;
+
+impl<V> WeightScale<V> for ZeroWeightScale {
+    #[inline]
+    fn weight(&self, _: &V) -> usize {
+        0
+    }
+}
+
+/// A configuration structure used to create an LRU cache.
+pub struct CLruCacheConfig<V, S = RandomState, W = ZeroWeightScale> {
+    capacity: NonZeroUsize,
+    hash_builder: S,
+    reserve: Option<usize>,
+    scale: W,
+    _marker: std::marker::PhantomData<V>,
+}
+
+impl<V> CLruCacheConfig<V> {
+    /// Creates a new configuration that will create an LRU cache
+    /// that will hold at most `capacity` elements and default parameters.
+    pub fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            capacity,
+            hash_builder: RandomState::default(),
+            reserve: None,
+            scale: ZeroWeightScale,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<V, S: BuildHasher, W: WeightScale<V>> CLruCacheConfig<V, S, W> {
+    /// Configure the provided hash builder.
+    pub fn with_hasher<O: BuildHasher>(self, hash_builder: O) -> CLruCacheConfig<V, O, W> {
+        let Self {
+            capacity,
+            reserve,
+            scale,
+            _marker,
+            ..
+        } = self;
+        CLruCacheConfig {
+            capacity,
+            hash_builder,
+            reserve,
+            scale,
+            _marker,
         }
     }
 
-    /// Returns an iterator visiting all entries in order, giving a mutable reference on V.
-    /// The iterator element type is `(&'a K, &'a mut V)`.
-    pub fn iter_mut(&mut self) -> CLruCacheIterMut<'_, K, V> {
-        CLruCacheIterMut {
-            iter: self.storage.iter_mut(),
+    /// Configure the amount of pre-allocated memory to order to hold at least `reserve` elements
+    /// without reallocating.
+    pub fn with_memory(mut self, reserve: usize) -> Self {
+        self.reserve = Some(reserve);
+        self
+    }
+
+    /// Configure the provided scale.
+    pub fn with_scale<O: WeightScale<V>>(self, scale: O) -> CLruCacheConfig<V, S, O> {
+        let Self {
+            capacity,
+            hash_builder,
+            reserve,
+            ..
+        } = self;
+        CLruCacheConfig {
+            capacity,
+            hash_builder,
+            reserve,
+            scale,
+            _marker: std::marker::PhantomData,
         }
     }
+}
+
+/// A weighted LRU cache with constant time operations.
+///
+/// Each value in the cache can have a weight that is retrieved using
+/// the provided [`WeightScale`] implementation. The default scale is
+/// [`ZeroWeightScale`] and always return 0. The number of elements that
+/// can be stored in the cache is conditioned by the sum of [`CLruCache::len`]
+/// and [`CLruCache::weight`]:
+///
+/// [`CLruCache::len`] + [`CLruCache::weight`] <= [`CLruCache::capacity`]
+///
+/// Using the default [`ZeroWeightScale`] scale unlocks some useful APIs
+/// that can currently only be implemented for this scale. Namely:
+///
+/// * [`CLruCache::put`]
+/// * [`CLruCache::put_or_modify`]
+/// * [`CLruCache::try_put_or_modify`]
+///
+/// And also all methods that return a mutable reference to the value of an element.
+/// This is because modifying the value of an element can lead the modification
+/// of its weight and therefore would put the cache into an incoherent state.
+/// For the same reason, it is a logic error for a value to change weight while
+/// being stored in the cache.
+#[derive(Debug)]
+pub struct CLruCache<K, V, S = RandomState, W: WeightScale<V> = ZeroWeightScale> {
+    lookup: HashMap<Key<K>, usize, S>,
+    storage: FixedSizeList<CLruNode<K, V>>,
+    scale: W,
+    weight: usize,
 }
 
 impl<K: Eq + Hash, V> CLruCache<K, V> {
-    /// Creates a new LRU Cache that holds at most `capacity` elements.
+    /// Creates a new LRU cache that holds at most `capacity` elements.
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             lookup: HashMap::new(),
             storage: FixedSizeList::new(capacity.get()),
+            scale: ZeroWeightScale,
+            weight: 0,
         }
     }
 
-    /// Creates a new LRU Cache that holds at most `capacity` elements
+    /// Creates a new LRU cache that holds at most `capacity` elements
     /// and pre-allocate memory to order to hold at least `reserve` elements
     /// without reallocating.
     pub fn with_memory(capacity: NonZeroUsize, mut reserve: usize) -> Self {
@@ -504,38 +595,61 @@ impl<K: Eq + Hash, V> CLruCache<K, V> {
         Self {
             lookup: HashMap::with_capacity(reserve),
             storage: FixedSizeList::with_memory(capacity.get(), reserve),
+            scale: ZeroWeightScale,
+            weight: 0,
         }
     }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
-    /// Creates a new LRU Cache that holds at most `capacity` elements
+    /// Creates a new LRU cache that holds at most `capacity` elements
     /// and uses the provided hash builder to hash keys.
-    pub fn with_hasher(capacity: NonZeroUsize, hash_builder: S) -> Self {
+    pub fn with_hasher(capacity: NonZeroUsize, hash_builder: S) -> CLruCache<K, V, S> {
         Self {
             lookup: HashMap::with_hasher(hash_builder),
             storage: FixedSizeList::new(capacity.get()),
+            scale: ZeroWeightScale,
+            weight: 0,
         }
     }
+}
 
-    /// Creates a new LRU Cache that holds at most `capacity` elements
-    /// and pre-allocate memory to order to hold at least `reserve` elements
-    /// without reallocating and also uses the provided hash builder to hash keys.
-    pub fn with_memory_and_hasher(
-        capacity: NonZeroUsize,
-        mut reserve: usize,
-        hash_builder: S,
-    ) -> Self {
-        if reserve > capacity.get() {
-            reserve = capacity.get();
-        }
+impl<K: Eq + Hash, V, W: WeightScale<V>> CLruCache<K, V, RandomState, W> {
+    /// Creates a new LRU cache that holds at most `capacity` elements
+    /// and uses the provided scale to retrieve value's weight.
+    pub fn with_scale(capacity: NonZeroUsize, scale: W) -> CLruCache<K, V, RandomState, W> {
         Self {
-            lookup: HashMap::with_capacity_and_hasher(reserve, hash_builder),
-            storage: FixedSizeList::with_memory(capacity.get(), reserve),
+            lookup: HashMap::with_hasher(RandomState::default()),
+            storage: FixedSizeList::new(capacity.get()),
+            scale,
+            weight: 0,
+        }
+    }
+}
+
+impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
+    /// Creates a new LRU cache using the provided configuration.
+    pub fn with_config(config: CLruCacheConfig<V, S, W>) -> Self {
+        let CLruCacheConfig {
+            capacity,
+            hash_builder,
+            reserve,
+            scale,
+            ..
+        } = config;
+        Self {
+            lookup: HashMap::with_hasher(hash_builder),
+            storage: if let Some(reserve) = reserve {
+                FixedSizeList::with_memory(capacity.get(), reserve)
+            } else {
+                FixedSizeList::new(capacity.get())
+            },
+            scale,
+            weight: 0,
         }
     }
 
-    /// Returns the number of key-value pairs that are currently in the the cache.
+    /// Returns the number of key-value pairs that are currently in the cache.
     pub fn len(&self) -> usize {
         debug_assert_eq!(self.lookup.len(), self.storage.len());
         self.storage.len()
@@ -546,6 +660,11 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         self.storage.capacity()
     }
 
+    /// Returns the total weight of the elements in the cache.
+    pub fn weight(&self) -> usize {
+        self.weight
+    }
+
     /// Returns a bool indicating whether the cache is empty or not.
     pub fn is_empty(&self) -> bool {
         debug_assert_eq!(self.lookup.is_empty(), self.storage.is_empty());
@@ -554,11 +673,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Returns a bool indicating whether the cache is full or not.
     pub fn is_full(&self) -> bool {
-        debug_assert_eq!(
-            self.lookup.len() == self.storage.capacity(),
-            self.storage.is_full()
-        );
-        self.storage.is_full()
+        self.len() + self.weight() == self.capacity()
     }
 
     /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
@@ -566,14 +681,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn front(&self) -> Option<(&K, &V)> {
         self.storage
             .front()
-            .map(|CLruNode { key, value }| (&*key.0, value))
-    }
-
-    /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
-    /// Like `peek`, `font` does not update the LRU list so the item's position will be unchanged.
-    pub fn front_mut(&mut self) -> Option<(&K, &mut V)> {
-        self.storage
-            .front_mut()
             .map(|CLruNode { key, value }| (&*key.0, value))
     }
 
@@ -585,14 +692,206 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
             .map(|CLruNode { key, value }| (&*key.0, value))
     }
 
-    /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
-    /// Like `peek`, `back` does not update the LRU list so the item's position will be unchanged.
-    pub fn back_mut(&mut self) -> Option<(&K, &mut V)> {
-        self.storage
-            .back_mut()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+    /// Puts a key-value pair into cache.
+    /// If the key already exists in the cache, then it updates the key's value and returns the old value.
+    /// Otherwise, `None` is returned.
+    pub fn put_with_weight(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
+        let weight = self.scale.weight(&value);
+        if weight >= self.capacity() {
+            return Err((key, value));
+        }
+        match self.lookup.entry(Key(Rc::new(key))) {
+            Entry::Occupied(mut occ) => {
+                // TODO: store keys in the cache itself for reuse.
+                let mut keys = Vec::new();
+                let old = self.storage.remove(*occ.get()).unwrap();
+                self.weight -= self.scale.weight(&old.value);
+                while self.storage.len() + self.weight + weight >= self.storage.capacity() {
+                    let node = self.storage.pop_back().unwrap();
+                    keys.push(node.key);
+                    self.weight -= self.scale.weight(&node.value);
+                }
+                // It's fine to unwrap here because:
+                // * the cache capacity is non zero
+                // * the cache cannot be full
+                let (idx, _) = self
+                    .storage
+                    .push_front(CLruNode {
+                        key: Key(occ.key().0.clone()),
+                        value,
+                    })
+                    .unwrap();
+                occ.insert(idx);
+                self.weight += weight;
+                for key in keys.drain(..) {
+                    self.lookup.remove(&key);
+                }
+                Ok(Some(old.value))
+            }
+            Entry::Vacant(vac) => {
+                let mut keys = Vec::new();
+                while self.storage.len() + self.weight + weight >= self.storage.capacity() {
+                    let node = self.storage.pop_back().unwrap();
+                    keys.push(node.key);
+                    self.weight -= self.scale.weight(&node.value);
+                }
+                // It's fine to unwrap here because:
+                // * the cache capacity is non zero
+                // * the cache cannot be full
+                let (idx, _) = self
+                    .storage
+                    .push_front(CLruNode {
+                        key: Key(vac.key().0.clone()),
+                        value,
+                    })
+                    .unwrap();
+                vac.insert(idx);
+                self.weight += weight;
+                for key in keys.drain(..) {
+                    self.lookup.remove(&key);
+                }
+                Ok(None)
+            }
+        }
     }
 
+    /// Returns a reference to the value of the key in the cache or `None` if it is not present in the cache.
+    /// Moves the key to the head of the LRU list if it exists.
+    pub fn get<Q: ?Sized>(&mut self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let key: &KeyRef<Q> = key.into();
+        let idx = *self.lookup.get(key)?;
+        let value = self.storage.remove(idx)?;
+        self.storage
+            .push_front(value)
+            .map(|(_, CLruNode { value, .. })| &*value)
+    }
+
+    /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
+    pub fn pop<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let key: &KeyRef<Q> = key.into();
+        let idx = self.lookup.remove(key)?;
+        self.storage.remove(idx).map(|CLruNode { value, .. }| {
+            self.weight -= self.scale.weight(&value);
+            value
+        })
+    }
+
+    /// Removes and returns the key and value corresponding to the most recently used item or `None` if the cache is empty.
+    pub fn pop_front(&mut self) -> Option<(K, V)> {
+        if let Some(CLruNode { key, value }) = self.storage.pop_front() {
+            self.lookup.remove(&key).unwrap();
+            self.weight -= self.scale.weight(&value);
+            let key = match Rc::try_unwrap(key.0) {
+                Ok(key) => key,
+                Err(_) => unreachable!(),
+            };
+            Some((key, value))
+        } else {
+            None
+        }
+    }
+
+    /// Removes and returns the key and value corresponding to the least recently used item or `None` if the cache is empty.
+    pub fn pop_back(&mut self) -> Option<(K, V)> {
+        if let Some(CLruNode { key, value }) = self.storage.pop_back() {
+            self.lookup.remove(&key).unwrap();
+            self.weight -= self.scale.weight(&value);
+            let key = match Rc::try_unwrap(key.0) {
+                Ok(key) => key,
+                Err(_) => unreachable!(),
+            };
+            Some((key, value))
+        } else {
+            None
+        }
+    }
+
+    /// Returns a reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
+    /// Unlike `get`, `peek` does not update the LRU list so the key's position will be unchanged.
+    pub fn peek<Q: ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let key: &KeyRef<Q> = key.into();
+        let idx = *self.lookup.get(key)?;
+        self.storage.node_ref(idx).map(|node| &node.data.value)
+    }
+
+    /// Returns a bool indicating whether the given key is in the cache.
+    /// Does not update the LRU list.
+    pub fn contains<Q: ?Sized>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self.peek(key).is_some()
+    }
+
+    /// Clears the contents of the cache.
+    pub fn clear(&mut self) {
+        self.lookup.clear();
+        self.storage.clear();
+    }
+
+    /// Resizes the cache.
+    /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
+    pub fn resize(&mut self, capacity: NonZeroUsize) {
+        while capacity.get() < self.storage.len() + self.weight() {
+            if let Some(CLruNode { key, value }) = self.storage.pop_back() {
+                self.lookup.remove(&key).unwrap();
+                self.weight -= self.scale.weight(&value);
+            }
+        }
+        self.storage.resize(capacity.get());
+        for i in 0..self.len() {
+            let FixedSizeListNode { data, .. } = self.storage.node_ref(i).unwrap();
+            *self.lookup.get_mut(&data.key).unwrap() = i;
+        }
+    }
+
+    /// Retains only the elements specified by the predicate.
+    /// In other words, remove all pairs `(k, v)` such that `f(&k,&mut v)` returns `false`.
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        let mut front = self.storage.front;
+        while front != usize::MAX {
+            let node = self.storage.node_mut(front).unwrap();
+            let next = node.next;
+            let CLruNode {
+                ref key,
+                ref mut value,
+            } = node.data;
+            if !f(&key.0, value) {
+                self.lookup.remove(&node.data.key).unwrap();
+                self.storage.remove(front);
+            }
+            front = next;
+        }
+    }
+}
+
+impl<K, V, S, W: WeightScale<V>> CLruCache<K, V, S, W> {
+    /// Returns an iterator visiting all entries in order.
+    /// The iterator element type is `(&'a K, &'a V)`.
+    pub fn iter(&self) -> CLruCacheIter<'_, K, V> {
+        CLruCacheIter {
+            iter: self.storage.iter(),
+        }
+    }
+}
+
+impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Puts a key-value pair into cache.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
@@ -634,152 +933,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 }
                 None
             }
-        }
-    }
-
-    /// Returns a reference to the value of the key in the cache or `None` if it is not present in the cache.
-    /// Moves the key to the head of the LRU list if it exists.
-    pub fn get<Q: ?Sized>(&mut self, key: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let key: &KeyRef<Q> = key.into();
-        let idx = *self.lookup.get(key)?;
-        let value = self.storage.remove(idx)?;
-        self.storage
-            .push_front(value)
-            .map(|(_, CLruNode { value, .. })| &*value)
-    }
-
-    /// Returns a mutable reference to the value of the key in the cache or `None` if it is not present in the cache.
-    /// Moves the key to the head of the LRU list if it exists.
-    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let key: &KeyRef<Q> = key.into();
-        let idx = *self.lookup.get(key)?;
-        let value = self.storage.remove(idx)?;
-        self.storage
-            .push_front(value)
-            .map(|(_, CLruNode { value, .. })| value)
-    }
-
-    /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
-    pub fn pop<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let key: &KeyRef<Q> = key.into();
-        let idx = self.lookup.remove(key)?;
-        self.storage.remove(idx).map(|CLruNode { value, .. }| value)
-    }
-
-    /// Removes and returns the key and value corresponding to the most recently used item or `None` if the cache is empty.
-    pub fn pop_front(&mut self) -> Option<(K, V)> {
-        if let Some(CLruNode { key, value }) = self.storage.pop_front() {
-            self.lookup.remove(&key).unwrap();
-            let key = match Rc::try_unwrap(key.0) {
-                Ok(key) => key,
-                Err(_) => unreachable!(),
-            };
-            Some((key, value))
-        } else {
-            None
-        }
-    }
-
-    /// Removes and returns the key and value corresponding to the least recently used item or `None` if the cache is empty.
-    pub fn pop_back(&mut self) -> Option<(K, V)> {
-        if let Some(CLruNode { key, value }) = self.storage.pop_back() {
-            self.lookup.remove(&key).unwrap();
-            let key = match Rc::try_unwrap(key.0) {
-                Ok(key) => key,
-                Err(_) => unreachable!(),
-            };
-            Some((key, value))
-        } else {
-            None
-        }
-    }
-
-    /// Returns a reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
-    /// Unlike `get`, `peek` does not update the LRU list so the key's position will be unchanged.
-    pub fn peek<Q: ?Sized>(&self, key: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let key: &KeyRef<Q> = key.into();
-        let idx = *self.lookup.get(key)?;
-        self.storage.node_ref(idx).map(|node| &node.data.value)
-    }
-
-    /// Returns a mutable reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
-    /// Unlike `get_mut`, `peek_mut` does not update the LRU list so the key's position will be unchanged.
-    pub fn peek_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let key: &KeyRef<Q> = key.into();
-        let idx = *self.lookup.get(key)?;
-        self.storage.node_mut(idx).map(|node| &mut node.data.value)
-    }
-
-    /// Returns a bool indicating whether the given key is in the cache.
-    /// Does not update the LRU list.
-    pub fn contains<Q: ?Sized>(&mut self, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        self.peek(key).is_some()
-    }
-
-    /// Clears the contents of the cache.
-    pub fn clear(&mut self) {
-        self.lookup.clear();
-        self.storage.clear();
-    }
-
-    /// Resizes the cache.
-    /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
-    pub fn resize(&mut self, capacity: NonZeroUsize) {
-        while capacity.get() < self.storage.len() {
-            if let Some(CLruNode { key, .. }) = self.storage.pop_back() {
-                self.lookup.remove(&key).unwrap();
-            }
-        }
-        self.storage.resize(capacity.get());
-        for i in 0..self.len() {
-            let FixedSizeListNode { data, .. } = self.storage.node_ref(i).unwrap();
-            *self.lookup.get_mut(&data.key).unwrap() = i;
-        }
-    }
-
-    /// Retains only the elements specified by the predicate.
-    /// In other words, remove all pairs `(k, v)` such that `f(&k,&mut v)` returns `false`.
-    pub fn retain<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&K, &mut V) -> bool,
-    {
-        let mut front = self.storage.front;
-        while front != usize::MAX {
-            let node = self.storage.node_mut(front).unwrap();
-            let next = node.next;
-            let CLruNode {
-                ref key,
-                ref mut value,
-            } = node.data;
-            if !f(&key.0, value) {
-                self.lookup.remove(&node.data.key).unwrap();
-                self.storage.remove(front);
-            }
-            front = next;
         }
     }
 
@@ -906,6 +1059,59 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 }
                 Ok(&mut node.value)
             }
+        }
+    }
+
+    /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
+    /// Like `peek`, `font` does not update the LRU list so the item's position will be unchanged.
+    pub fn front_mut(&mut self) -> Option<(&K, &mut V)> {
+        self.storage
+            .front_mut()
+            .map(|CLruNode { key, value }| (&*key.0, value))
+    }
+
+    /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
+    /// Like `peek`, `back` does not update the LRU list so the item's position will be unchanged.
+    pub fn back_mut(&mut self) -> Option<(&K, &mut V)> {
+        self.storage
+            .back_mut()
+            .map(|CLruNode { key, value }| (&*key.0, value))
+    }
+
+    /// Returns a mutable reference to the value of the key in the cache or `None` if it is not present in the cache.
+    /// Moves the key to the head of the LRU list if it exists.
+    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let key: &KeyRef<Q> = key.into();
+        let idx = *self.lookup.get(key)?;
+        let value = self.storage.remove(idx)?;
+        self.storage
+            .push_front(value)
+            .map(|(_, CLruNode { value, .. })| value)
+    }
+
+    /// Returns a mutable reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
+    /// Unlike `get_mut`, `peek_mut` does not update the LRU list so the key's position will be unchanged.
+    pub fn peek_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let key: &KeyRef<Q> = key.into();
+        let idx = *self.lookup.get(key)?;
+        self.storage.node_mut(idx).map(|node| &mut node.data.value)
+    }
+}
+
+impl<K, V, S> CLruCache<K, V, S> {
+    /// Returns an iterator visiting all entries in order, giving a mutable reference on V.
+    /// The iterator element type is `(&'a K, &'a mut V)`.
+    pub fn iter_mut(&mut self) -> CLruCacheIterMut<'_, K, V> {
+        CLruCacheIterMut {
+            iter: self.storage.iter_mut(),
         }
     }
 }
@@ -1070,6 +1276,10 @@ mod tests {
     const FOUR: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
     #[allow(unsafe_code)]
     const FIVE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5) };
+    #[allow(unsafe_code)]
+    const SIX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(6) };
+    #[allow(unsafe_code)]
+    const HEIGHT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8) };
     #[allow(unsafe_code)]
     const MANY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(200) };
 
@@ -1293,27 +1503,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_changes_oldest() {
-        let mut cache = CLruCache::new(THREE);
-
-        assert_eq!(cache.put("apple", "red"), None);
-        assert_eq!(cache.put("banana", "yellow"), None);
-        assert_eq!(cache.put("pear", "green"), None);
-
-        // get oldest => not oldest anymore
-        assert_eq!(cache.get(&"apple"), Some(&"red"));
-
-        // insert new
-        assert_eq!(cache.put("tomato", "red"), None);
-
-        // check lru was removed
-        assert_eq!(cache.get(&"apple"), Some(&"red"));
-        assert!(cache.get(&"banana").is_none());
-        assert_eq!(cache.get(&"pear"), Some(&"green"));
-        assert_eq!(cache.get(&"tomato"), Some(&"red"));
-    }
-
-    #[test]
     fn test_peek() {
         let mut cache = CLruCache::new(TWO);
 
@@ -1506,56 +1695,15 @@ mod tests {
 
         cache.put(1, "a");
         cache.put(2, "b");
-
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache.capacity(), 4);
-        assert!(!cache.is_full());
-        assert_eq!(cache.get(&1), Some(&"a"));
-        assert_eq!(cache.get(&2), Some(&"b"));
-
-        cache.resize(THREE);
-
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache.capacity(), 3);
-        assert!(!cache.is_full());
-        assert_eq!(cache.get(&1), Some(&"a"));
-        assert_eq!(cache.get(&2), Some(&"b"));
-
         cache.put(3, "c");
-
-        assert_eq!(cache.len(), 3);
-        assert_eq!(cache.capacity(), 3);
-        assert!(cache.is_full());
-        assert_eq!(cache.get(&1), Some(&"a"));
-        assert_eq!(cache.get(&2), Some(&"b"));
-        assert_eq!(cache.get(&3), Some(&"c"));
-
-        assert_eq!(cache.pop(&1), Some("a"));
-        assert_eq!(cache.pop(&2), Some("b"));
-
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.capacity(), 3);
-        assert!(!cache.is_full());
-        assert_eq!(cache.get(&1), None);
-        assert_eq!(cache.get(&2), None);
-        assert_eq!(cache.get(&3), Some(&"c"));
+        cache.put(4, "d");
 
         cache.resize(TWO);
 
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.capacity(), 2);
-        assert!(!cache.is_full());
-        assert_eq!(cache.get(&1), None);
-        assert_eq!(cache.get(&2), None);
-        assert_eq!(cache.get(&3), Some(&"c"));
-
-        cache.put(4, "d");
-
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 2);
-        assert!(cache.is_full());
-        assert_eq!(cache.get(&1), None);
-        assert_eq!(cache.get(&2), None);
+        assert!(cache.get(&1).is_none());
+        assert!(cache.get(&2).is_none());
         assert_eq!(cache.get(&3), Some(&"c"));
         assert_eq!(cache.get(&4), Some(&"d"));
     }
@@ -2042,5 +2190,210 @@ mod tests {
         assert_eq!(iter.next(), Some((&"a", &2)));
         assert_eq!(iter.next(), Some((&"b", &4)));
         assert_eq!(iter.next(), None);
+    }
+
+    #[derive(Debug)]
+    struct StringScale;
+
+    impl WeightScale<&str> for StringScale {
+        fn weight(&self, value: &&str) -> usize {
+            value.len()
+        }
+    }
+
+    #[test]
+    fn test_weighted_insert_and_get() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(11).unwrap()).with_scale(StringScale),
+        );
+        assert!(cache.is_empty());
+
+        assert_eq!(cache.put_with_weight("apple", "red").unwrap(), None);
+        assert_eq!(cache.put_with_weight("banana", "yellow").unwrap(), None);
+
+        assert_eq!(cache.capacity(), 11);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 9);
+        assert!(!cache.is_empty());
+        assert!(cache.is_full()); // because of weight
+        assert_eq!(cache.get(&"apple"), Some(&"red"));
+        assert_eq!(cache.get(&"banana"), Some(&"yellow"));
+    }
+
+    #[test]
+    fn test_zero_weight_fails() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(3).unwrap()).with_scale(StringScale),
+        );
+
+        assert!(cache.put_with_weight("apple", "red").is_err());
+        assert!(cache.put_with_weight("apple", "red").is_err());
+    }
+
+    #[test]
+    fn test_greater_than_max_weight_fails() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(3).unwrap()).with_scale(StringScale),
+        );
+
+        assert!(cache.put_with_weight("apple", "red").is_err());
+    }
+
+    #[test]
+    fn test_weighted_insert_update() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(6).unwrap()).with_scale(StringScale),
+        );
+
+        assert_eq!(cache.put_with_weight("apple", "red").unwrap(), None);
+        assert_eq!(
+            cache.put_with_weight("apple", "green").unwrap(),
+            Some("red")
+        );
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(&"apple"), Some(&"green"));
+    }
+
+    #[test]
+    fn test_weighted_insert_removes_oldest() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(16).unwrap()).with_scale(StringScale),
+        );
+
+        assert_eq!(cache.put_with_weight("apple", "red").unwrap(), None);
+        assert_eq!(cache.put_with_weight("banana", "yellow").unwrap(), None);
+        assert_eq!(cache.put_with_weight("pear", "green").unwrap(), None);
+
+        assert!(cache.get(&"apple").is_none());
+        assert_eq!(cache.get(&"banana"), Some(&"yellow"));
+        assert_eq!(cache.get(&"pear"), Some(&"green"));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 11);
+        assert_eq!(cache.capacity(), 16);
+        assert!(!cache.is_full());
+
+        // Even though we inserted "apple" into the cache earlier it has since been removed from
+        // the cache so there is no current value for `insert` to return.
+        assert_eq!(cache.put_with_weight("apple", "green").unwrap(), None);
+        assert_eq!(cache.put_with_weight("tomato", "red").unwrap(), None);
+
+        assert_eq!(cache.len(), 3); // tomato, apple, pear
+        assert_eq!(cache.weight(), 13); //  3 + 5 + 5
+        assert_eq!(cache.capacity(), 16);
+        assert!(cache.is_full());
+
+        assert_eq!(cache.get(&"pear"), Some(&"green"));
+        assert_eq!(cache.get(&"apple"), Some(&"green"));
+        assert_eq!(cache.get(&"tomato"), Some(&"red"));
+    }
+
+    #[test]
+    fn test_weighted_resize_larger() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(4).unwrap()).with_scale(StringScale),
+        );
+
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 2);
+        assert_eq!(cache.capacity(), 4);
+        assert!(cache.is_full());
+
+        cache.resize(SIX);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 2);
+        assert_eq!(cache.capacity(), 6);
+        assert!(!cache.is_full());
+
+        cache.resize(HEIGHT);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 2);
+        assert_eq!(cache.capacity(), 8);
+        assert!(!cache.is_full());
+
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+        assert_eq!(cache.put_with_weight(4, "d"), Ok(None));
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.weight(), 4);
+        assert_eq!(cache.capacity(), 8);
+        assert!(cache.is_full());
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_weighted_resize_smaller() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(StringScale),
+        );
+
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+        assert_eq!(cache.put_with_weight(4, "d"), Ok(None));
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.weight(), 4);
+        assert_eq!(cache.capacity(), 8);
+        assert!(cache.is_full());
+
+        cache.resize(FOUR);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.weight(), 2);
+        assert_eq!(cache.capacity(), 4);
+        assert!(cache.is_full());
+
+        assert!(cache.get(&1).is_none());
+        assert!(cache.get(&2).is_none());
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
+
+        cache.resize(THREE);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.weight(), 1);
+        assert_eq!(cache.capacity(), 3);
+        assert!(!cache.is_full());
+
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.get(&2), None);
+        assert_eq!(cache.get(&3), None);
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_weighted_resize_equal() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(StringScale),
+        );
+
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+        assert_eq!(cache.put_with_weight(4, "d"), Ok(None));
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.weight(), 4);
+        assert_eq!(cache.capacity(), 8);
+        assert!(cache.is_full());
+
+        cache.resize(HEIGHT);
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.weight(), 4);
+        assert_eq!(cache.capacity(), 8);
+        assert!(cache.is_full());
+
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+        assert_eq!(cache.get(&4), Some(&"d"));
     }
 }
