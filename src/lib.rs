@@ -276,18 +276,13 @@ impl<T> FixedSizeList<T> {
         match capacity.cmp(&cap) {
             Ordering::Less => {
                 self.reorder();
-                let mut nodes = std::mem::take(&mut self.nodes);
-                nodes.truncate(capacity);
-                self.nodes = nodes;
+                self.nodes.truncate(capacity);
                 self.free.clear();
+                self.free.extend(len..self.nodes.len());
                 self.capacity = capacity;
             }
             Ordering::Equal => {}
             Ordering::Greater => {
-                let mut nodes = std::mem::take(&mut self.nodes);
-                nodes.extend((cap..capacity).map(|_| None));
-                self.nodes = nodes;
-                self.free.extend((cap..self.nodes.len()).rev());
                 self.capacity = capacity;
             }
         };
@@ -753,13 +748,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Resizes the cache.
     /// If the new capacity is smaller than the size of the current cache any entries past the new capacity are discarded.
-    pub fn resize(&mut self, capacity: usize) {
-        while capacity < self.storage.len() {
+    pub fn resize(&mut self, capacity: NonZeroUsize) {
+        while capacity.get() < self.storage.len() {
             if let Some(CLruNode { key, .. }) = self.storage.pop_back() {
                 self.lookup.remove(&key).unwrap();
             }
         }
-        self.storage.resize(capacity);
+        self.storage.resize(capacity.get());
         for i in 0..self.len() {
             let FixedSizeListNode { data, .. } = self.storage.node_ref(i).unwrap();
             *self.lookup.get_mut(&data.key).unwrap() = i;
@@ -1463,12 +1458,12 @@ mod tests {
         cache.put(1, "a");
         cache.put(2, "b");
 
-        cache.resize(3);
+        cache.resize(THREE);
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 3);
 
-        cache.resize(4);
+        cache.resize(FOUR);
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 4);
@@ -1490,15 +1485,56 @@ mod tests {
 
         cache.put(1, "a");
         cache.put(2, "b");
-        cache.put(3, "c");
-        cache.put(4, "d");
 
-        cache.resize(2);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 4);
+        assert!(!cache.is_full());
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+
+        cache.resize(THREE);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 3);
+        assert!(!cache.is_full());
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+
+        cache.put(3, "c");
+
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.capacity(), 3);
+        assert!(cache.is_full());
+        assert_eq!(cache.get(&1), Some(&"a"));
+        assert_eq!(cache.get(&2), Some(&"b"));
+        assert_eq!(cache.get(&3), Some(&"c"));
+
+        assert_eq!(cache.pop(&1), Some("a"));
+        assert_eq!(cache.pop(&2), Some("b"));
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.capacity(), 3);
+        assert!(!cache.is_full());
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.get(&2), None);
+        assert_eq!(cache.get(&3), Some(&"c"));
+
+        cache.resize(TWO);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.capacity(), 2);
+        assert!(!cache.is_full());
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.get(&2), None);
+        assert_eq!(cache.get(&3), Some(&"c"));
+
+        cache.put(4, "d");
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.capacity(), 2);
-        assert!(cache.get(&1).is_none());
-        assert!(cache.get(&2).is_none());
+        assert!(cache.is_full());
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.get(&2), None);
         assert_eq!(cache.get(&3), Some(&"c"));
         assert_eq!(cache.get(&4), Some(&"d"));
     }
@@ -1512,7 +1548,7 @@ mod tests {
         cache.put(3, "c");
         cache.put(4, "d");
 
-        cache.resize(4);
+        cache.resize(FOUR);
 
         assert_eq!(cache.len(), 4);
         assert_eq!(cache.capacity(), 4);
