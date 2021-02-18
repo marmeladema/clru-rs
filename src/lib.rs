@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn test_get_changes_oldest() {
-        let mut cache = CLruCache::new(3);
+        let mut cache = CLruCache::new(THREE);
 
         assert_eq!(cache.put("apple", "red"), None);
         assert_eq!(cache.put("banana", "yellow"), None);
