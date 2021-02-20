@@ -441,6 +441,12 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct Key<K>(Rc<K>);
 
+impl<K> AsRef<K> for Key<K> {
+    fn as_ref(&self) -> &K {
+        &*self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 struct KeyRef<Q: ?Sized>(Q);
@@ -489,7 +495,7 @@ struct CLruNode<K, V> {
 /// For the same reason, it is a logic error for a value to change weight while
 /// being stored in the cache.
 #[derive(Debug)]
-pub struct CLruCache<K, V, S = RandomState, W: WeightScale<V> = ZeroWeightScale> {
+pub struct CLruCache<K, V, S = RandomState, W: WeightScale<K, V> = ZeroWeightScale> {
     lookup: HashMap<Key<K>, usize, S>,
     storage: FixedSizeList<CLruNode<K, V>>,
     scale: W,
@@ -536,7 +542,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     }
 }
 
-impl<K: Eq + Hash, V, W: WeightScale<V>> CLruCache<K, V, RandomState, W> {
+impl<K: Eq + Hash, V, W: WeightScale<K, V>> CLruCache<K, V, RandomState, W> {
     /// Creates a new LRU cache that holds at most `capacity` elements
     /// and uses the provided scale to retrieve value's weight.
     pub fn with_scale(capacity: NonZeroUsize, scale: W) -> CLruCache<K, V, RandomState, W> {
@@ -549,9 +555,9 @@ impl<K: Eq + Hash, V, W: WeightScale<V>> CLruCache<K, V, RandomState, W> {
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
+impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W> {
     /// Creates a new LRU cache using the provided configuration.
-    pub fn with_config(config: CLruCacheConfig<V, S, W>) -> Self {
+    pub fn with_config(config: CLruCacheConfig<K, V, S, W>) -> Self {
         let CLruCacheConfig {
             capacity,
             hash_builder,
@@ -603,7 +609,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
     pub fn front(&self) -> Option<(&K, &V)> {
         self.storage
             .front()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value }| (key.as_ref(), value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
@@ -611,14 +617,14 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
     pub fn back(&self) -> Option<(&K, &V)> {
         self.storage
             .back()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value }| (key.as_ref(), value))
     }
 
     /// Puts a key-value pair into cache.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put_with_weight(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
-        let weight = self.scale.weight(&value);
+        let weight = self.scale.weight(&key, &value);
         if weight >= self.capacity() {
             return Err((key, value));
         }
@@ -627,11 +633,11 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
                 // TODO: store keys in the cache itself for reuse.
                 let mut keys = Vec::new();
                 let old = self.storage.remove(*occ.get()).unwrap();
-                self.weight -= self.scale.weight(&old.value);
+                self.weight -= self.scale.weight(old.key.as_ref(), &old.value);
                 while self.storage.len() + self.weight + weight >= self.storage.capacity() {
                     let node = self.storage.pop_back().unwrap();
+                    self.weight -= self.scale.weight(node.key.as_ref(), &node.value);
                     keys.push(node.key);
-                    self.weight -= self.scale.weight(&node.value);
                 }
                 // It's fine to unwrap here because:
                 // * the cache capacity is non zero
@@ -654,8 +660,8 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
                 let mut keys = Vec::new();
                 while self.storage.len() + self.weight + weight >= self.storage.capacity() {
                     let node = self.storage.pop_back().unwrap();
+                    self.weight -= self.scale.weight(node.key.as_ref(), &node.value);
                     keys.push(node.key);
-                    self.weight -= self.scale.weight(&node.value);
                 }
                 // It's fine to unwrap here because:
                 // * the cache capacity is non zero
@@ -700,8 +706,8 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
     {
         let key: &KeyRef<Q> = key.into();
         let idx = self.lookup.remove(key)?;
-        self.storage.remove(idx).map(|CLruNode { value, .. }| {
-            self.weight -= self.scale.weight(&value);
+        self.storage.remove(idx).map(|CLruNode { key, value, .. }| {
+            self.weight -= self.scale.weight(key.as_ref(), &value);
             value
         })
     }
@@ -710,7 +716,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
     pub fn pop_front(&mut self) -> Option<(K, V)> {
         if let Some(CLruNode { key, value }) = self.storage.pop_front() {
             self.lookup.remove(&key).unwrap();
-            self.weight -= self.scale.weight(&value);
+            self.weight -= self.scale.weight(key.as_ref(), &value);
             let key = match Rc::try_unwrap(key.0) {
                 Ok(key) => key,
                 Err(_) => unreachable!(),
@@ -725,7 +731,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
     pub fn pop_back(&mut self) -> Option<(K, V)> {
         if let Some(CLruNode { key, value }) = self.storage.pop_back() {
             self.lookup.remove(&key).unwrap();
-            self.weight -= self.scale.weight(&value);
+            self.weight -= self.scale.weight(key.as_ref(), &value);
             let key = match Rc::try_unwrap(key.0) {
                 Ok(key) => key,
                 Err(_) => unreachable!(),
@@ -770,7 +776,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
         while capacity.get() < self.storage.len() + self.weight() {
             if let Some(CLruNode { key, value }) = self.storage.pop_back() {
                 self.lookup.remove(&key).unwrap();
-                self.weight -= self.scale.weight(&value);
+                self.weight -= self.scale.weight(key.as_ref(), &value);
             }
         }
         self.storage.resize(capacity.get());
@@ -794,7 +800,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
                 ref key,
                 ref mut value,
             } = node.data;
-            if !f(&key.0, value) {
+            if !f(key.as_ref(), value) {
                 self.lookup.remove(&node.data.key).unwrap();
                 self.storage.remove(front);
             }
@@ -803,7 +809,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<V>> CLruCache<K, V, S, W> {
     }
 }
 
-impl<K, V, S, W: WeightScale<V>> CLruCache<K, V, S, W> {
+impl<K, V, S, W: WeightScale<K, V>> CLruCache<K, V, S, W> {
     /// Returns an iterator visiting all entries in order.
     /// The iterator element type is `(&'a K, &'a V)`.
     pub fn iter(&self) -> CLruCacheIter<'_, K, V> {
@@ -887,11 +893,11 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                     })
                     .unwrap();
                 occ.insert(idx);
-                modify_op(&*occ.key().0, &mut node.value, data);
+                modify_op(occ.key().as_ref(), &mut node.value, data);
                 &mut node.value
             }
             Entry::Vacant(vac) => {
-                let value = put_op(&*vac.key().0, data);
+                let value = put_op(vac.key().as_ref(), data);
                 let mut obsolete_key = None;
                 if self.storage.is_full() {
                     obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
@@ -951,13 +957,13 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                     })
                     .unwrap();
                 occ.insert(idx);
-                match modify_op(&*occ.key().0, &mut node.value, data) {
+                match modify_op(occ.key().as_ref(), &mut node.value, data) {
                     Ok(()) => Ok(&mut node.value),
                     Err(err) => Err(err),
                 }
             }
             Entry::Vacant(vac) => {
-                let value = match put_op(&*vac.key().0, data) {
+                let value = match put_op(vac.key().as_ref(), data) {
                     Ok(value) => value,
                     Err(err) => return Err(err),
                 };
@@ -2115,10 +2121,10 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct StringScale;
+    struct StrStrScale;
 
-    impl WeightScale<&str> for StringScale {
-        fn weight(&self, value: &&str) -> usize {
+    impl WeightScale<&str, &str> for StrStrScale {
+        fn weight(&self, _key: &&str, value: &&str) -> usize {
             value.len()
         }
     }
@@ -2126,7 +2132,7 @@ mod tests {
     #[test]
     fn test_weighted_insert_and_get() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(11).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(11).unwrap()).with_scale(StrStrScale),
         );
         assert!(cache.is_empty());
 
@@ -2145,7 +2151,7 @@ mod tests {
     #[test]
     fn test_zero_weight_fails() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(3).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(3).unwrap()).with_scale(StrStrScale),
         );
 
         assert!(cache.put_with_weight("apple", "red").is_err());
@@ -2155,7 +2161,7 @@ mod tests {
     #[test]
     fn test_greater_than_max_weight_fails() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(3).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(3).unwrap()).with_scale(StrStrScale),
         );
 
         assert!(cache.put_with_weight("apple", "red").is_err());
@@ -2164,7 +2170,7 @@ mod tests {
     #[test]
     fn test_weighted_insert_update() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(6).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(6).unwrap()).with_scale(StrStrScale),
         );
 
         assert_eq!(cache.put_with_weight("apple", "red").unwrap(), None);
@@ -2180,7 +2186,7 @@ mod tests {
     #[test]
     fn test_weighted_insert_removes_oldest() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(16).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(16).unwrap()).with_scale(StrStrScale),
         );
 
         assert_eq!(cache.put_with_weight("apple", "red").unwrap(), None);
@@ -2210,10 +2216,19 @@ mod tests {
         assert_eq!(cache.get(&"tomato"), Some(&"red"));
     }
 
+    #[derive(Debug)]
+    struct IntStrScale;
+
+    impl WeightScale<usize, &str> for IntStrScale {
+        fn weight(&self, _key: &usize, value: &&str) -> usize {
+            value.len()
+        }
+    }
+
     #[test]
     fn test_weighted_resize_larger() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(4).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(4).unwrap()).with_scale(IntStrScale),
         );
 
         assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
@@ -2253,7 +2268,7 @@ mod tests {
     #[test]
     fn test_weighted_resize_smaller() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(IntStrScale),
         );
 
         assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
@@ -2293,7 +2308,7 @@ mod tests {
     #[test]
     fn test_weighted_resize_equal() {
         let mut cache = CLruCache::with_config(
-            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(StringScale),
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(IntStrScale),
         );
 
         assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
