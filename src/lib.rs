@@ -39,6 +39,12 @@
 #![deny(unsafe_code)]
 #![deny(warnings)]
 
+mod config;
+mod weight;
+
+pub use crate::config::*;
+pub use crate::weight::*;
+
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -458,90 +464,6 @@ impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
 struct CLruNode<K, V> {
     key: Key<K>,
     value: V,
-}
-
-/// Trait used to retrieve the weight of a value.
-pub trait WeightScale<V> {
-    /// Returns the weight of a value.
-    fn weight(&self, value: &V) -> usize;
-}
-
-/// A scale that always return 0.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ZeroWeightScale;
-
-impl<V> WeightScale<V> for ZeroWeightScale {
-    #[inline]
-    fn weight(&self, _: &V) -> usize {
-        0
-    }
-}
-
-/// A configuration structure used to create an LRU cache.
-pub struct CLruCacheConfig<V, S = RandomState, W = ZeroWeightScale> {
-    capacity: NonZeroUsize,
-    hash_builder: S,
-    reserve: Option<usize>,
-    scale: W,
-    _marker: std::marker::PhantomData<V>,
-}
-
-impl<V> CLruCacheConfig<V> {
-    /// Creates a new configuration that will create an LRU cache
-    /// that will hold at most `capacity` elements and default parameters.
-    pub fn new(capacity: NonZeroUsize) -> Self {
-        Self {
-            capacity,
-            hash_builder: RandomState::default(),
-            reserve: None,
-            scale: ZeroWeightScale,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<V, S: BuildHasher, W: WeightScale<V>> CLruCacheConfig<V, S, W> {
-    /// Configure the provided hash builder.
-    pub fn with_hasher<O: BuildHasher>(self, hash_builder: O) -> CLruCacheConfig<V, O, W> {
-        let Self {
-            capacity,
-            reserve,
-            scale,
-            _marker,
-            ..
-        } = self;
-        CLruCacheConfig {
-            capacity,
-            hash_builder,
-            reserve,
-            scale,
-            _marker,
-        }
-    }
-
-    /// Configure the amount of pre-allocated memory to order to hold at least `reserve` elements
-    /// without reallocating.
-    pub fn with_memory(mut self, reserve: usize) -> Self {
-        self.reserve = Some(reserve);
-        self
-    }
-
-    /// Configure the provided scale.
-    pub fn with_scale<O: WeightScale<V>>(self, scale: O) -> CLruCacheConfig<V, S, O> {
-        let Self {
-            capacity,
-            hash_builder,
-            reserve,
-            ..
-        } = self;
-        CLruCacheConfig {
-            capacity,
-            hash_builder,
-            reserve,
-            scale,
-            _marker: std::marker::PhantomData,
-        }
-    }
 }
 
 /// A weighted LRU cache with constant time operations.
