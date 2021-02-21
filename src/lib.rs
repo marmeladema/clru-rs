@@ -1,11 +1,36 @@
 //! Another LRU cache implementation in rust.
-//! The cache is backed by a [HashMap](https://doc.rust-lang.org/std/collections/struct.HashMap.html) and thus
-//! offers a O(1) time complexity for common operations:
-//! * `get` / `get_mut`
-//! * `put` / `pop`
-//! * `peek` / `peek_mut`
+//! It has two main characteristics that differentiates it from other implementation:
 //!
-//! ## Example
+//! 1. It is backed by a [HashMap](https://doc.rust-lang.org/std/collections/struct.HashMap.html): it
+//!    offers a O(1) time complexity (amortized average) for any operation that requires to lookup an entry from
+//!    a key.
+//!
+//! 2. It is a weighted cache: each key-value pair has a weight and the capacity serves as both as:
+//!    * a limit to the number of elements
+//!    * and as a limit to the total weight of its elements
+//!
+//!    using the following formula:
+//!
+//!    [`CLruCache::len`] + [`CLruCache::weight`] <= [`CLruCache::capacity`]
+//!
+//! Even though most operations don't depend on the number of elements in the cache,
+//! [`CLruCache::put_with_weight`] has a special behavior: because it needs to make room
+//! for the new element, it will remove enough least recently used elements. In the worst
+//! case, that will require to fully empty the cache. Additionally, if the weight of the
+//! new element is too big, the insertion can fail.
+//!
+//! For the common case of an LRU cache whose elements don't have a weight, a default
+//! [`ZeroWeightScale`] is provided and unlocks some useful APIs like:
+//!
+//! * [`CLruCache::put`]: an infallible insertion that will remove a maximum of 1 element.
+//! * [`CLruCache::put_or_modify`]: a conditional insertion or modification flow similar
+//!   to the entry API of [`HashMap`].
+//! * [`CLruCache::try_put_or_modify`]: fallible version of [`CLruCache::put_or_modify`].
+//! * All APIs that allow to retrieve a mutable reference to a value (e.g.: [`CLruCache::get_mut`]).
+//!
+//! ## Examples
+//!
+//! ### Using the default [`ZeroWeightScale`]:
 //!
 //! ```rust
 //!
@@ -33,6 +58,35 @@
 //! }
 //!
 //! assert_eq!(cache.get("banana"), Some(&6));
+//! ```
+//!
+//! ### Using a custom [`WeightScale`] implementation:
+//!
+//! ```rust
+//!
+//! use std::num::NonZeroUsize;
+//! use clru::{CLruCache, CLruCacheConfig, WeightScale};
+//!
+//! struct CustomScale;
+//!
+//! impl WeightScale<String, &str> for CustomScale {
+//!     fn weight(&self, _key: &String, value: &&str) -> usize {
+//!         value.len()
+//!     }
+//! }
+//!
+//! let mut cache = CLruCache::with_config(
+//!     CLruCacheConfig::new(NonZeroUsize::new(6).unwrap()).with_scale(CustomScale),
+//! );
+//!
+//! assert_eq!(cache.put_with_weight("apple".to_string(), "red").unwrap(), None);
+//! assert_eq!(
+//!     cache.put_with_weight("apple".to_string(), "green").unwrap(),
+//!     Some("red")
+//! );
+//!
+//! assert_eq!(cache.len(), 1);
+//! assert_eq!(cache.get("apple"), Some(&"green"));
 //! ```
 
 #![deny(missing_docs)]
@@ -478,10 +532,10 @@ struct CLruNode<K, V> {
     value: V,
 }
 
-/// A weighted LRU cache with constant time operations.
+/// A weighted LRU cache with mostly¹ constant time operations.
 ///
-/// Each value in the cache can have a weight that is retrieved using
-/// the provided [`WeightScale`] implementation. The default scale is
+/// Each key-value pair in the cache can have a weight that is retrieved
+/// using the provided [`WeightScale`] implementation. The default scale is
 /// [`ZeroWeightScale`] and always return 0. The number of elements that
 /// can be stored in the cache is conditioned by the sum of [`CLruCache::len`]
 /// and [`CLruCache::weight`]:
@@ -500,6 +554,8 @@ struct CLruNode<K, V> {
 /// of its weight and therefore would put the cache into an incoherent state.
 /// For the same reason, it is a logic error for a value to change weight while
 /// being stored in the cache.
+///
+/// Note 1: See [`CLruCache::put_with_weight`]
 #[derive(Debug)]
 pub struct CLruCache<K, V, S = RandomState, W: WeightScale<K, V> = ZeroWeightScale> {
     lookup: HashMap<Key<K>, usize, S>,
@@ -520,7 +576,7 @@ impl<K: Eq + Hash, V> CLruCache<K, V> {
     }
 
     /// Creates a new LRU cache that holds at most `capacity` elements
-    /// and pre-allocate memory to order to hold at least `reserve` elements
+    /// and pre-allocates memory in order to hold at least `reserve` elements
     /// without reallocating.
     pub fn with_memory(capacity: NonZeroUsize, mut reserve: usize) -> Self {
         if reserve > capacity.get() {
@@ -589,7 +645,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         self.storage.len()
     }
 
-    /// Returns the maximum number of key-value pairs the cache can hold.
+    /// Returns the capacity of the cache. It serves as a limit for
+    /// * the number of elements that the cache can hold.
+    /// * the total weight of the elements in the cache.
     pub fn capacity(&self) -> usize {
         self.storage.capacity()
     }
@@ -611,7 +669,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     }
 
     /// Returns the value corresponding to the most recently used item or `None` if the cache is empty.
-    /// Like `peek`, `font` does not update the LRU list so the item's position will be unchanged.
+    /// Like `peek`, `front` does not update the LRU list so the item's position will be unchanged.
     pub fn front(&self) -> Option<(&K, &V)> {
         self.storage
             .front()
@@ -629,7 +687,8 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     /// Puts a key-value pair into cache taking it's weight into account.
     /// If the weight of the new element is greater than what the cache can hold,
     /// it returns the provided key-value pair as an error.
-    /// Otherwise, it removes enough elements for the new element to be inserted.
+    /// Otherwise, it removes enough elements for the new element to be inserted,
+    /// thus making it a non constant time operation.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put_with_weight(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
@@ -939,7 +998,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// to the supplied functions. This can useful when both functions need
     /// to access the same variable.
     ///
-    /// This is the faillible version of [`CLruCache::put_or_modify`].
+    /// This is the fallible version of [`CLruCache::put_or_modify`].
     pub fn try_put_or_modify<
         T,
         E,

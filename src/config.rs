@@ -46,7 +46,7 @@ impl<K, V, S: BuildHasher, W: WeightScale<K, V>> CLruCacheConfig<K, V, S, W> {
         }
     }
 
-    /// Configure the amount of pre-allocated memory to order to hold at least `reserve` elements
+    /// Configure the amount of pre-allocated memory in order to hold at least `reserve` elements
     /// without reallocating.
     pub fn with_memory(mut self, reserve: usize) -> Self {
         self.reserve = Some(reserve);
