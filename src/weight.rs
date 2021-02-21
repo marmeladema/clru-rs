@@ -1,6 +1,6 @@
-/// Trait used to retrieve the weight of a value.
+/// Trait used to retrieve the weight of a key-value pair.
 pub trait WeightScale<K, V> {
-    /// Returns the weight of a value.
+    /// Returns the weight of a key-value pair.
     fn weight(&self, key: &K, value: &V) -> usize;
 }
 
