@@ -438,8 +438,14 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 struct Key<K>(Rc<K>);
+
+impl<K> Clone for Key<K> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<K> AsRef<K> for Key<K> {
     fn as_ref(&self) -> &K {
@@ -645,7 +651,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(occ.key().0.clone()),
+                        key: occ.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -669,7 +675,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(vac.key().0.clone()),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -833,7 +839,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(occ.key().0.clone()),
+                        key: occ.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -851,7 +857,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(vac.key().0.clone()),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -888,7 +894,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(occ.key().0.clone()),
+                        key: occ.key().clone(),
                         value: node.value,
                     })
                     .unwrap();
@@ -908,7 +914,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(vac.key().0.clone()),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -952,7 +958,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(occ.key().0.clone()),
+                        key: occ.key().clone(),
                         value: node.value,
                     })
                     .unwrap();
@@ -977,7 +983,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key(vac.key().0.clone()),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
