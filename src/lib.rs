@@ -796,10 +796,10 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     }
 
     /// Retains only the elements specified by the predicate.
-    /// In other words, remove all pairs `(k, v)` such that `f(&k,&mut v)` returns `false`.
+    /// In other words, remove all pairs `(k, v)` such that `f(&k, &v)` returns `false`.
     pub fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(&K, &mut V) -> bool,
+        F: FnMut(&K, &V) -> bool,
     {
         let mut front = self.storage.front;
         while front != usize::MAX {
@@ -1040,6 +1040,28 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         self.storage.node_mut(idx).map(|node| &mut node.data.value)
+    }
+
+    /// Retains only the elements specified by the predicate.
+    /// In other words, remove all pairs `(k, v)` such that `f(&k, &mut v)` returns `false`.
+    pub fn retain_mut<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        let mut front = self.storage.front;
+        while front != usize::MAX {
+            let node = self.storage.node_mut(front).unwrap();
+            let next = node.next;
+            let CLruNode {
+                ref key,
+                ref mut value,
+            } = node.data;
+            if !f(key.as_ref(), value) {
+                self.lookup.remove(&node.data.key).unwrap();
+                self.storage.remove(front);
+            }
+            front = next;
+        }
     }
 }
 
@@ -1899,7 +1921,7 @@ mod tests {
 
         assert_eq!(cache.len(), 5);
 
-        cache.retain(|k, v| match *k {
+        cache.retain_mut(|k, v| match *k {
             "b" | "d" => false,
             _ => {
                 *v += 1;
