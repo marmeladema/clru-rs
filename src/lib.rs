@@ -626,7 +626,10 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
             .map(|CLruNode { key, value }| (key.as_ref(), value))
     }
 
-    /// Puts a key-value pair into cache.
+    /// Puts a key-value pair into cache taking it's weight into account.
+    /// If the weight of the new element is greater than what the cache can hold,
+    /// it returns the provided key-value pair as an error.
+    /// Otherwise, it removes enough elements for the new element to be inserted.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put_with_weight(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
