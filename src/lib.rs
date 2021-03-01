@@ -1174,7 +1174,7 @@ impl<'a, K, V> ExactSizeIterator for CLruCacheIter<'a, K, V> {
     }
 }
 
-impl<'a, K, V, S> IntoIterator for &'a CLruCache<K, V, S> {
+impl<'a, K, V, S, W: WeightScale<K, V>> IntoIterator for &'a CLruCache<K, V, S, W> {
     type Item = (&'a K, &'a V);
     type IntoIter = CLruCacheIter<'a, K, V>;
 
@@ -1239,11 +1239,13 @@ impl<'a, K, V, S> IntoIterator for &'a mut CLruCache<K, V, S> {
 /// (provided by the `IntoIterator` trait). See its documentation for more.
 ///
 /// [`into_iter`]: struct.CLruCache.html#method.into_iter
-pub struct CLruCacheIntoIter<K, V, S> {
-    cache: CLruCache<K, V, S>,
+pub struct CLruCacheIntoIter<K, V, S, W: WeightScale<K, V>> {
+    cache: CLruCache<K, V, S, W>,
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher> Iterator for CLruCacheIntoIter<K, V, S> {
+impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> Iterator
+    for CLruCacheIntoIter<K, V, S, W>
+{
     type Item = (K, V);
 
     #[inline]
@@ -1257,25 +1259,29 @@ impl<K: Eq + Hash, V, S: BuildHasher> Iterator for CLruCacheIntoIter<K, V, S> {
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher> DoubleEndedIterator for CLruCacheIntoIter<K, V, S> {
+impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> DoubleEndedIterator
+    for CLruCacheIntoIter<K, V, S, W>
+{
     fn next_back(&mut self) -> Option<Self::Item> {
         self.cache.pop_back()
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher> ExactSizeIterator for CLruCacheIntoIter<K, V, S> {
+impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> ExactSizeIterator
+    for CLruCacheIntoIter<K, V, S, W>
+{
     fn len(&self) -> usize {
         self.size_hint().0
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher> IntoIterator for CLruCache<K, V, S> {
+impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> IntoIterator for CLruCache<K, V, S, W> {
     type Item = (K, V);
-    type IntoIter = CLruCacheIntoIter<K, V, S>;
+    type IntoIter = CLruCacheIntoIter<K, V, S, W>;
 
     /// Consumes the cache into an iterator yielding elements by value.
     #[inline]
-    fn into_iter(self) -> CLruCacheIntoIter<K, V, S> {
+    fn into_iter(self) -> CLruCacheIntoIter<K, V, S, W> {
         CLruCacheIntoIter { cache: self }
     }
 }
@@ -2422,5 +2428,118 @@ mod tests {
         assert_eq!(cache.get(&2), Some(&"b"));
         assert_eq!(cache.get(&3), Some(&"c"));
         assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_weighted_iter() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(IntStrScale),
+        );
+
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+        assert_eq!(cache.put_with_weight(4, "d"), Ok(None));
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(cache.weight(), 4);
+        assert_eq!(cache.capacity(), 8);
+        assert!(cache.is_full());
+    }
+
+    #[test]
+    fn test_weighted_iter_forwards() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(IntStrScale),
+        );
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.next(), Some((&3, &"c")));
+
+        assert_eq!(iter.len(), 2);
+        assert_eq!(iter.next(), Some((&2, &"b")));
+
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.next(), Some((&1, &"a")));
+
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_weighted_iter_backwards() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(IntStrScale),
+        );
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.next_back(), Some((&1, &"a")));
+
+        assert_eq!(iter.len(), 2);
+        assert_eq!(iter.next_back(), Some((&2, &"b")));
+
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.next_back(), Some((&3, &"c")));
+
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.next_back(), None);
+    }
+
+    #[test]
+    fn test_weighted_iter_forwards_and_backwards() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(8).unwrap()).with_scale(IntStrScale),
+        );
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.next(), Some((&3, &"c")));
+
+        assert_eq!(iter.len(), 2);
+        assert_eq!(iter.next_back(), Some((&1, &"a")));
+
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.next(), Some((&2, &"b")));
+
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.next_back(), None);
+    }
+
+    #[test]
+    fn test_weighted_into_iter() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(10).unwrap()).with_scale(IntStrScale),
+        );
+
+        assert_eq!(cache.put_with_weight(1, "a"), Ok(None));
+        assert_eq!(cache.put_with_weight(2, "b"), Ok(None));
+        assert_eq!(cache.put_with_weight(3, "c"), Ok(None));
+        assert_eq!(cache.put_with_weight(4, "d"), Ok(None));
+        assert_eq!(cache.put_with_weight(5, "e"), Ok(None));
+
+        let mut vec = Vec::new();
+        for (k, v) in &cache {
+            vec.push((k, v));
+        }
+        assert_eq!(
+            vec,
+            vec![(&5, &"e"), (&4, &"d"), (&3, &"c"), (&2, &"b"), (&1, &"a")]
+        );
+
+        assert_eq!(
+            cache.into_iter().collect::<Vec<_>>(),
+            vec![(5, "e"), (4, "d"), (3, "c"), (2, "b"), (1, "a")]
+        );
     }
 }
