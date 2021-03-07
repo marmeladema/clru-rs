@@ -1185,6 +1185,9 @@ impl<'a, K, V, S, W: WeightScale<K, V>> IntoIterator for &'a CLruCache<K, V, S, 
     }
 }
 
+#[allow(unsafe_code)]
+unsafe impl<K: Send, V: Send, S: Send, W: WeightScale<K, V> + Send> Send for CLruCache<K, V, S, W> {}
+
 /// An iterator over mutables entries of a `CLruCache`.
 ///
 /// This `struct` is created by the [`iter_mut`] method on [`CLruCache`][`CLruCache`].
@@ -2584,5 +2587,56 @@ mod tests {
             cache.into_iter().collect::<Vec<_>>(),
             vec![(5, "e"), (4, "d"), (3, "c"), (2, "b"), (1, "a")]
         );
+    }
+
+    #[test]
+    fn test_is_send() {
+        fn is_send<T: Send>() {}
+
+        fn cache_is_send<K: Send, V: Send, S: Send, W: WeightScale<K, V> + Send>() {
+            is_send::<K>();
+            is_send::<V>();
+            is_send::<S>();
+            is_send::<W>();
+            is_send::<CLruCache<K, V, S, W>>();
+        }
+
+        cache_is_send::<String, String, RandomState, ZeroWeightScale>();
+
+        fn cache_in_mutex<
+            K: Default + Eq + Hash + Send + 'static,
+            V: Default + Send + 'static,
+            S: BuildHasher + Send + 'static,
+            W: WeightScale<K, V> + Send + 'static,
+        >(
+            cache: CLruCache<K, V, S, W>,
+        ) where
+            (K, V): std::fmt::Debug,
+        {
+            use std::sync::{Arc, Mutex};
+            use std::thread;
+
+            let mutex: Arc<Mutex<CLruCache<K, V, S, W>>> = Arc::new(Mutex::new(cache));
+            let mutex2 = mutex.clone();
+            let t1 = thread::spawn(move || {
+                mutex
+                    .lock()
+                    .unwrap()
+                    .put_with_weight(Default::default(), Default::default())
+                    .unwrap();
+            });
+            let t2 = thread::spawn(move || {
+                mutex2
+                    .lock()
+                    .unwrap()
+                    .put_with_weight(Default::default(), Default::default())
+                    .unwrap();
+            });
+            t1.join().unwrap();
+            t2.join().unwrap();
+        }
+
+        let cache: CLruCache<String, String> = CLruCache::new(TWO);
+        cache_in_mutex(cache);
     }
 }
