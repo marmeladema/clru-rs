@@ -352,12 +352,23 @@ impl<T> FixedSizeList<T> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct FixedSizeListIter<'a, T> {
     list: &'a FixedSizeList<T>,
     front: usize,
     back: usize,
     len: usize,
+}
+
+impl<'a, T> Clone for FixedSizeListIter<'a, T> {
+    fn clone(&self) -> Self {
+        Self {
+            list: self.list,
+            front: self.front,
+            back: self.back,
+            len: self.len,
+        }
+    }
 }
 
 impl<'a, T> Iterator for FixedSizeListIter<'a, T> {
@@ -496,9 +507,9 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
 #[derive(Debug, Eq, Hash, PartialEq)]
 struct Key<K>(Rc<K>);
 
-impl<K> Clone for Key<K> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl<K> From<&Key<K>> for Key<K> {
+    fn from(key: &Key<K>) -> Self {
+        Self(key.0.clone())
     }
 }
 
@@ -527,7 +538,7 @@ impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct CLruNode<K, V> {
     key: Key<K>,
     value: V,
@@ -714,7 +725,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().clone(),
+                        key: occ.key().into(),
                         value,
                     })
                     .unwrap();
@@ -738,7 +749,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().clone(),
+                        key: vac.key().into(),
                         value,
                     })
                     .unwrap();
@@ -902,7 +913,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().clone(),
+                        key: occ.key().into(),
                         value,
                     })
                     .unwrap();
@@ -920,7 +931,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().clone(),
+                        key: vac.key().into(),
                         value,
                     })
                     .unwrap();
@@ -957,7 +968,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().clone(),
+                        key: occ.key().into(),
                         value: node.value,
                     })
                     .unwrap();
@@ -977,7 +988,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().clone(),
+                        key: vac.key().into(),
                         value,
                     })
                     .unwrap();
@@ -1021,7 +1032,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().clone(),
+                        key: occ.key().into(),
                         value: node.value,
                     })
                     .unwrap();
@@ -1046,7 +1057,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().clone(),
+                        key: vac.key().into(),
                         value,
                     })
                     .unwrap();
