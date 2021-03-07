@@ -504,6 +504,14 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
     }
 }
 
+// Internal key structure. The generic type `K` is the user supplied
+// key type that is wrapped into a `Rc` in order to be shared both in
+// the `HashMap` lookup table and in the `FixedSizeList` as well without
+// having to clone the key. The keys need to be stored in the `FixedSizeList`
+// because we sometime need to be able to get key associated with a value
+// to later remove it from the lookup table (see `CLruCache::put`).
+// The `Rc` is fully owned by the cache, and is never surfaced publicly in
+// any API. This invariant is what allows the cache to implement `Send`.
 #[derive(Debug, Eq, Hash, PartialEq)]
 struct Key<K>(Rc<K>);
 
