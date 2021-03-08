@@ -105,6 +105,7 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
+use std::iter::FromIterator;
 use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -1286,6 +1287,23 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> IntoIterator for CLr
     }
 }
 
+impl<K: Eq + Hash, V, S: BuildHasher + Default> FromIterator<(K, V)> for CLruCache<K, V, S> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let cap = NonZeroUsize::new(usize::MAX).unwrap();
+        let mut cache = CLruCache::with_hasher(cap, S::default());
+
+        for (k, v) in iter {
+            cache.put(k, v);
+        }
+
+        cache.resize(
+            NonZeroUsize::new(cache.len()).unwrap_or_else(|| NonZeroUsize::new(1).unwrap()),
+        );
+
+        cache
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2214,6 +2232,31 @@ mod tests {
         assert_eq!(iter.next(), Some((&"a", &2)));
         assert_eq!(iter.next(), Some((&"b", &4)));
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_from_iterator() {
+        let cache: CLruCache<&'static str, usize> =
+            vec![("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5)]
+                .into_iter()
+                .collect();
+
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.capacity(), 5);
+        assert_eq!(cache.is_full(), true);
+
+        assert_eq!(
+            cache.into_iter().collect::<Vec<_>>(),
+            vec![("e", 5), ("d", 4), ("c", 3), ("b", 2), ("a", 1)]
+        );
+
+        let cache: CLruCache<&'static str, usize> = vec![].into_iter().collect();
+
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.capacity(), 1);
+        assert_eq!(cache.is_full(), false);
+
+        assert_eq!(cache.into_iter().collect::<Vec<_>>(), vec![]);
     }
 
     #[derive(Debug)]
