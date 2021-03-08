@@ -1326,6 +1326,14 @@ impl<K: Eq + Hash, V, S: BuildHasher + Default> FromIterator<(K, V)> for CLruCac
     }
 }
 
+impl<K: Eq + Hash, V, S: BuildHasher> Extend<(K, V)> for CLruCache<K, V, S> {
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (k, v) in iter {
+            self.put(k, v);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2279,6 +2287,29 @@ mod tests {
         assert_eq!(cache.is_full(), false);
 
         assert_eq!(cache.into_iter().collect::<Vec<_>>(), vec![]);
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut cache = CLruCache::new(FIVE);
+
+        cache.put("a", 1);
+        cache.put("b", 2);
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.capacity(), 5);
+        assert_eq!(cache.is_full(), false);
+
+        cache.extend(vec![("c", 3), ("d", 4), ("e", 5)].into_iter());
+
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.capacity(), 5);
+        assert_eq!(cache.is_full(), true);
+
+        assert_eq!(
+            cache.into_iter().collect::<Vec<_>>(),
+            vec![("e", 5), ("d", 4), ("c", 3), ("b", 2), ("a", 1)]
+        );
     }
 
     #[derive(Debug)]
