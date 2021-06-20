@@ -1335,6 +1335,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> Extend<(K, V)> for CLruCache<K, V, S> {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
 mod tests {
     use super::*;
 
