@@ -17,6 +17,16 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - uses: hecrj/setup-rust-action@v1
+      with:
+        rust-version: stable
+        components: clippy,rustfmt
+    - name: Print versions
+      run: |
+        cargo --version
+        rustc --version
+        clippy-driver --version
+        rustfmt --version
     - name: Build
       run: cargo build --verbose
     - name: Run tests
