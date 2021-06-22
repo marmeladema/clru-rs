@@ -101,8 +101,8 @@ pub use crate::weight::*;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
+use std::collections::hash_map::{Entry, OccupiedEntry, VacantEntry};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FromIterator;
@@ -511,13 +511,24 @@ impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
 // because we sometime need to be able to get key associated with a value
 // to later remove it from the lookup table (see `CLruCache::put`).
 // The `Rc` is fully owned by the cache, and is never surfaced publicly in
-// any API. This invariant is what allows the cache to implement `Send`.
+// any API. Additionally, the only way to clone the underlying `Rc` is from
+// either a `OccupiedEntry` or a `VacantEntry` which can only be obtained
+// from a mutable reference to the `HashMap` and therefore from a mutable
+// reference to the cache.
+// Those invariants are what allows the cache to implement `Send` and
+// `Sync` traits.
 #[derive(Debug, Eq, Hash, PartialEq)]
 struct Key<K>(Rc<K>);
 
-impl<K> From<&Key<K>> for Key<K> {
-    fn from(key: &Key<K>) -> Self {
-        Self(key.0.clone())
+impl<K> From<&OccupiedEntry<'_, Key<K>, usize>> for Key<K> {
+    fn from(entry: &OccupiedEntry<'_, Key<K>, usize>) -> Self {
+        Self(entry.key().0.clone())
+    }
+}
+
+impl<K> From<&VacantEntry<'_, Key<K>, usize>> for Key<K> {
+    fn from(entry: &VacantEntry<'_, Key<K>, usize>) -> Self {
+        Self(entry.key().0.clone())
     }
 }
 
@@ -733,7 +744,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().into(),
+                        key: Key::<K>::from(&occ),
                         value,
                     })
                     .unwrap();
@@ -757,7 +768,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().into(),
+                        key: Key::<K>::from(&vac),
                         value,
                     })
                     .unwrap();
@@ -921,7 +932,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().into(),
+                        key: Key::<K>::from(&occ),
                         value,
                     })
                     .unwrap();
@@ -939,7 +950,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().into(),
+                        key: Key::<K>::from(&vac),
                         value,
                     })
                     .unwrap();
@@ -976,7 +987,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().into(),
+                        key: Key::<K>::from(&occ),
                         value: node.value,
                     })
                     .unwrap();
@@ -996,7 +1007,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().into(),
+                        key: Key::<K>::from(&vac),
                         value,
                     })
                     .unwrap();
@@ -1040,7 +1051,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: occ.key().into(),
+                        key: Key::<K>::from(&occ),
                         value: node.value,
                     })
                     .unwrap();
@@ -1065,7 +1076,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: vac.key().into(),
+                        key: Key::<K>::from(&vac),
                         value,
                     })
                     .unwrap();
@@ -1206,6 +1217,9 @@ impl<'a, K, V, S, W: WeightScale<K, V>> IntoIterator for &'a CLruCache<K, V, S, 
 
 #[allow(unsafe_code)]
 unsafe impl<K: Send, V: Send, S: Send, W: WeightScale<K, V> + Send> Send for CLruCache<K, V, S, W> {}
+
+#[allow(unsafe_code)]
+unsafe impl<K: Sync, V: Sync, S: Sync, W: WeightScale<K, V> + Sync> Sync for CLruCache<K, V, S, W> {}
 
 /// An iterator over mutables entries of a `CLruCache`.
 ///
@@ -2689,5 +2703,56 @@ mod tests {
 
         let cache: CLruCache<String, String> = CLruCache::new(TWO);
         cache_in_mutex(cache);
+    }
+
+    #[test]
+    fn test_is_sync() {
+        fn is_sync<T: Sync>() {}
+
+        fn cache_is_sync<K: Sync, V: Sync, S: Sync, W: WeightScale<K, V> + Sync>() {
+            is_sync::<K>();
+            is_sync::<V>();
+            is_sync::<S>();
+            is_sync::<W>();
+            is_sync::<CLruCache<K, V, S, W>>();
+        }
+
+        cache_is_sync::<String, String, RandomState, ZeroWeightScale>();
+
+        fn cache_in_rwlock<
+            K: Default + Eq + Hash + Send + Sync + 'static,
+            V: Default + Send + Sync + 'static,
+            S: BuildHasher + Send + Sync + 'static,
+            W: WeightScale<K, V> + Send + Sync + 'static,
+        >(
+            cache: CLruCache<K, V, S, W>,
+        ) where
+            (K, V): std::fmt::Debug,
+        {
+            use std::sync::{Arc, RwLock};
+            use std::thread;
+
+            let mutex: Arc<RwLock<CLruCache<K, V, S, W>>> = Arc::new(RwLock::new(cache));
+            let mutex2 = mutex.clone();
+            let t1 = thread::spawn(move || {
+                mutex
+                    .write()
+                    .unwrap()
+                    .put_with_weight(Default::default(), Default::default())
+                    .unwrap();
+            });
+            let t2 = thread::spawn(move || {
+                mutex2
+                    .write()
+                    .unwrap()
+                    .put_with_weight(Default::default(), Default::default())
+                    .unwrap();
+            });
+            t1.join().unwrap();
+            t2.join().unwrap();
+        }
+
+        let cache: CLruCache<String, String> = CLruCache::new(TWO);
+        cache_in_rwlock(cache);
     }
 }
