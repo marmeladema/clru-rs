@@ -28,6 +28,10 @@
 //! * [`CLruCache::try_put_or_modify`]: fallible version of [`CLruCache::put_or_modify`].
 //! * All APIs that allow to retrieve a mutable reference to a value (e.g.: [`CLruCache::get_mut`]).
 //!
+//! The cache requires the keys to be clonable because it will store 2 instances
+//! of each key in different internal data structures. If cloning a key can be
+//! expensive, you might want to consider using an [`std::rc::Rc`] or an [`std::sync::Arc`].
+//!
 //! ## Examples
 //!
 //! ### Using the default [`ZeroWeightScale`]:
@@ -102,70 +106,16 @@ use crate::list::{FixedSizeList, FixedSizeListIter, FixedSizeListIterMut};
 pub use crate::weight::*;
 
 use std::borrow::Borrow;
+use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
-use std::collections::hash_map::{Entry, OccupiedEntry, VacantEntry};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FromIterator;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
-
-// Internal key structure. The generic type `K` is the user supplied
-// key type that is wrapped into a `Rc` in order to be shared both in
-// the `HashMap` lookup table and in the `FixedSizeList` as well without
-// having to clone the key. The keys need to be stored in the `FixedSizeList`
-// because we sometime need to be able to get key associated with a value
-// to later remove it from the lookup table (see `CLruCache::put`).
-// The `Rc` is fully owned by the cache, and is never surfaced publicly in
-// any API. Additionally, the only way to clone the underlying `Rc` is from
-// either a `OccupiedEntry` or a `VacantEntry` which can only be obtained
-// from a mutable reference to the `HashMap` and therefore from a mutable
-// reference to the cache.
-// Those invariants are what allows the cache to implement `Send` and
-// `Sync` traits.
-#[derive(Debug, Eq, Hash, PartialEq)]
-struct Key<K>(Rc<K>);
-
-impl<K> From<&OccupiedEntry<'_, Key<K>, usize>> for Key<K> {
-    fn from(entry: &OccupiedEntry<'_, Key<K>, usize>) -> Self {
-        Self(entry.key().0.clone())
-    }
-}
-
-impl<K> From<&VacantEntry<'_, Key<K>, usize>> for Key<K> {
-    fn from(entry: &VacantEntry<'_, Key<K>, usize>) -> Self {
-        Self(entry.key().0.clone())
-    }
-}
-
-impl<K> AsRef<K> for Key<K> {
-    fn as_ref(&self) -> &K {
-        &*self.0
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-#[repr(transparent)]
-struct KeyRef<Q: ?Sized>(Q);
-
-impl<Q: ?Sized> From<&Q> for &KeyRef<Q> {
-    #[allow(unsafe_code)]
-    fn from(value: &Q) -> Self {
-        // Safety: this is safe because `KeyRef` is a newtype around Q
-        // and is marked as `#[repr(transparent)]`
-        unsafe { &*(value as *const Q as *const KeyRef<Q>) }
-    }
-}
-
-impl<Q: ?Sized, K: Borrow<Q>> Borrow<KeyRef<Q>> for Key<K> {
-    fn borrow(&self) -> &KeyRef<Q> {
-        (&*self.0).borrow().into()
-    }
-}
 
 #[derive(Debug)]
 struct CLruNode<K, V> {
-    key: Key<K>,
+    key: K,
     value: V,
 }
 
@@ -180,22 +130,28 @@ struct CLruNode<K, V> {
 /// [`CLruCache::len`] + [`CLruCache::weight`] <= [`CLruCache::capacity`]
 ///
 /// Using the default [`ZeroWeightScale`] scale unlocks some useful APIs
-/// that can currently only be implemented for this scale. Namely:
+/// that can currently only be implemented for this scale. The most interesting
+/// ones are probably:
 ///
 /// * [`CLruCache::put`]
 /// * [`CLruCache::put_or_modify`]
 /// * [`CLruCache::try_put_or_modify`]
 ///
-/// And also all methods that return a mutable reference to the value of an element.
-/// This is because modifying the value of an element can lead the modification
+/// But more generally, using [`ZeroWeightScale`] unlocks all methods that return
+/// a mutable reference to the value of an element.
+/// This is because modifying the value of an element can lead to a modification
 /// of its weight and therefore would put the cache into an incoherent state.
 /// For the same reason, it is a logic error for a value to change weight while
 /// being stored in the cache.
 ///
+/// The cache requires the keys to be clonable because it will store 2 instances
+/// of each key in different internal data structures. If cloning a key can be
+/// expensive, you might want to consider using an `Rc` or an `Arc`.
+///
 /// Note 1: See [`CLruCache::put_with_weight`]
 #[derive(Debug)]
 pub struct CLruCache<K, V, S = RandomState, W: WeightScale<K, V> = ZeroWeightScale> {
-    lookup: HashMap<Key<K>, usize, S>,
+    lookup: HashMap<K, usize, S>,
     storage: FixedSizeList<CLruNode<K, V>>,
     scale: W,
     weight: usize,
@@ -254,7 +210,7 @@ impl<K: Eq + Hash, V, W: WeightScale<K, V>> CLruCache<K, V, RandomState, W> {
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W> {
+impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W> {
     /// Creates a new LRU cache using the provided configuration.
     pub fn with_config(config: CLruCacheConfig<K, V, S, W>) -> Self {
         let CLruCacheConfig {
@@ -310,7 +266,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     pub fn front(&self) -> Option<(&K, &V)> {
         self.storage
             .front()
-            .map(|CLruNode { key, value }| (key.as_ref(), value))
+            .map(|CLruNode { key, value }| (key, value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
@@ -318,7 +274,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     pub fn back(&self) -> Option<(&K, &V)> {
         self.storage
             .back()
-            .map(|CLruNode { key, value }| (key.as_ref(), value))
+            .map(|CLruNode { key, value }| (key, value))
     }
 
     /// Puts a key-value pair into cache taking it's weight into account.
@@ -333,15 +289,15 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         if weight >= self.capacity() {
             return Err((key, value));
         }
-        match self.lookup.entry(Key(Rc::new(key))) {
+        match self.lookup.entry(key) {
             Entry::Occupied(mut occ) => {
                 // TODO: store keys in the cache itself for reuse.
                 let mut keys = Vec::new();
                 let old = self.storage.remove(*occ.get()).unwrap();
-                self.weight -= self.scale.weight(old.key.as_ref(), &old.value);
+                self.weight -= self.scale.weight(&old.key, &old.value);
                 while self.storage.len() + self.weight + weight >= self.storage.capacity() {
                     let node = self.storage.pop_back().unwrap();
-                    self.weight -= self.scale.weight(node.key.as_ref(), &node.value);
+                    self.weight -= self.scale.weight(&node.key, &node.value);
                     keys.push(node.key);
                 }
                 // It's fine to unwrap here because:
@@ -350,7 +306,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&occ),
+                        key: occ.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -365,7 +321,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let mut keys = Vec::new();
                 while self.storage.len() + self.weight + weight >= self.storage.capacity() {
                     let node = self.storage.pop_back().unwrap();
-                    self.weight -= self.scale.weight(node.key.as_ref(), &node.value);
+                    self.weight -= self.scale.weight(&node.key, &node.value);
                     keys.push(node.key);
                 }
                 // It's fine to unwrap here because:
@@ -374,7 +330,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&vac),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -395,7 +351,6 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         let value = self.storage.remove(idx)?;
         self.storage
@@ -409,10 +364,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let key: &KeyRef<Q> = key.into();
         let idx = self.lookup.remove(key)?;
         self.storage.remove(idx).map(|CLruNode { key, value, .. }| {
-            self.weight -= self.scale.weight(key.as_ref(), &value);
+            self.weight -= self.scale.weight(&key, &value);
             value
         })
     }
@@ -421,11 +375,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     pub fn pop_front(&mut self) -> Option<(K, V)> {
         if let Some(CLruNode { key, value }) = self.storage.pop_front() {
             self.lookup.remove(&key).unwrap();
-            self.weight -= self.scale.weight(key.as_ref(), &value);
-            let key = match Rc::try_unwrap(key.0) {
-                Ok(key) => key,
-                Err(_) => unreachable!(),
-            };
+            self.weight -= self.scale.weight(&key, &value);
             Some((key, value))
         } else {
             None
@@ -436,11 +386,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
     pub fn pop_back(&mut self) -> Option<(K, V)> {
         if let Some(CLruNode { key, value }) = self.storage.pop_back() {
             self.lookup.remove(&key).unwrap();
-            self.weight -= self.scale.weight(key.as_ref(), &value);
-            let key = match Rc::try_unwrap(key.0) {
-                Ok(key) => key,
-                Err(_) => unreachable!(),
-            };
+            self.weight -= self.scale.weight(&key, &value);
             Some((key, value))
         } else {
             None
@@ -454,7 +400,6 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         self.storage.get(idx).map(|node| &node.value)
     }
@@ -481,7 +426,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         while capacity.get() < self.storage.len() + self.weight() {
             if let Some(CLruNode { key, value }) = self.storage.pop_back() {
                 self.lookup.remove(&key).unwrap();
-                self.weight -= self.scale.weight(key.as_ref(), &value);
+                self.weight -= self.scale.weight(&key, &value);
             }
         }
         self.storage.resize(capacity.get());
@@ -500,7 +445,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         self.storage.retain(
             #[inline]
             |CLruNode { ref key, ref value }| {
-                if f(key.as_ref(), value) {
+                if f(key, value) {
                     true
                 } else {
                     self.lookup.remove(key).unwrap();
@@ -521,12 +466,12 @@ impl<K, V, S, W: WeightScale<K, V>> CLruCache<K, V, S, W> {
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
+impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Puts a key-value pair into cache.
     /// If the key already exists in the cache, then it updates the key's value and returns the old value.
     /// Otherwise, `None` is returned.
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
-        match self.lookup.entry(Key(Rc::new(key))) {
+        match self.lookup.entry(key) {
             Entry::Occupied(mut occ) => {
                 let old = self.storage.remove(*occ.get());
                 // It's fine to unwrap here because:
@@ -535,7 +480,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&occ),
+                        key: occ.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -553,7 +498,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, _) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&vac),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -581,7 +526,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         mut modify_op: M,
         data: T,
     ) -> &mut V {
-        match self.lookup.entry(Key(Rc::new(key))) {
+        match self.lookup.entry(key) {
             Entry::Occupied(mut occ) => {
                 let node = self.storage.remove(*occ.get()).unwrap();
                 // It's fine to unwrap here because:
@@ -590,16 +535,16 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&occ),
+                        key: occ.key().clone(),
                         value: node.value,
                     })
                     .unwrap();
                 occ.insert(idx);
-                modify_op(occ.key().as_ref(), &mut node.value, data);
+                modify_op(occ.key(), &mut node.value, data);
                 &mut node.value
             }
             Entry::Vacant(vac) => {
-                let value = put_op(vac.key().as_ref(), data);
+                let value = put_op(vac.key(), data);
                 let mut obsolete_key = None;
                 if self.storage.is_full() {
                     obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
@@ -610,7 +555,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&vac),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -645,7 +590,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         mut modify_op: M,
         data: T,
     ) -> Result<&mut V, E> {
-        match self.lookup.entry(Key(Rc::new(key))) {
+        match self.lookup.entry(key) {
             Entry::Occupied(mut occ) => {
                 let node = self.storage.remove(*occ.get()).unwrap();
                 // It's fine to unwrap here because:
@@ -654,18 +599,18 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&occ),
+                        key: occ.key().clone(),
                         value: node.value,
                     })
                     .unwrap();
                 occ.insert(idx);
-                match modify_op(occ.key().as_ref(), &mut node.value, data) {
+                match modify_op(occ.key(), &mut node.value, data) {
                     Ok(()) => Ok(&mut node.value),
                     Err(err) => Err(err),
                 }
             }
             Entry::Vacant(vac) => {
-                let value = match put_op(vac.key().as_ref(), data) {
+                let value = match put_op(vac.key(), data) {
                     Ok(value) => value,
                     Err(err) => return Err(err),
                 };
@@ -679,7 +624,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 let (idx, node) = self
                     .storage
                     .push_front(CLruNode {
-                        key: Key::<K>::from(&vac),
+                        key: vac.key().clone(),
                         value,
                     })
                     .unwrap();
@@ -697,7 +642,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn front_mut(&mut self) -> Option<(&K, &mut V)> {
         self.storage
             .front_mut()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value }| (&*key, value))
     }
 
     /// Returns the value corresponding to the least recently used item or `None` if the cache is empty.
@@ -705,7 +650,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn back_mut(&mut self) -> Option<(&K, &mut V)> {
         self.storage
             .back_mut()
-            .map(|CLruNode { key, value }| (&*key.0, value))
+            .map(|CLruNode { key, value }| (&*key, value))
     }
 
     /// Returns a mutable reference to the value of the key in the cache or `None` if it is not present in the cache.
@@ -715,7 +660,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         let value = self.storage.remove(idx)?;
         self.storage
@@ -730,7 +674,6 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let key: &KeyRef<Q> = key.into();
         let idx = *self.lookup.get(key)?;
         self.storage.get_mut(idx).map(|node| &mut node.value)
     }
@@ -747,7 +690,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                  ref key,
                  ref mut value,
              }| {
-                if f(key.as_ref(), value) {
+                if f(key, value) {
                     true
                 } else {
                     self.lookup.remove(key).unwrap();
@@ -786,7 +729,7 @@ impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .next()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value })| (key.borrow(), value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -798,7 +741,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIter<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value })| (key.borrow(), value))
     }
 }
 
@@ -818,12 +761,6 @@ impl<'a, K, V, S, W: WeightScale<K, V>> IntoIterator for &'a CLruCache<K, V, S, 
     }
 }
 
-#[allow(unsafe_code)]
-unsafe impl<K: Send, V: Send, S: Send, W: WeightScale<K, V> + Send> Send for CLruCache<K, V, S, W> {}
-
-#[allow(unsafe_code)]
-unsafe impl<K: Sync, V: Sync, S: Sync, W: WeightScale<K, V> + Sync> Sync for CLruCache<K, V, S, W> {}
-
 /// An iterator over mutables entries of a `CLruCache`.
 ///
 /// This `struct` is created by the [`iter_mut`] method on [`CLruCache`][`CLruCache`].
@@ -841,7 +778,7 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .next()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value })| (&*key, value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -853,7 +790,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
-            .map(|(_, CLruNode { key, value })| (key.0.borrow(), value))
+            .map(|(_, CLruNode { key, value })| (&*key, value))
     }
 }
 
@@ -883,7 +820,7 @@ pub struct CLruCacheIntoIter<K, V, S, W: WeightScale<K, V>> {
     cache: CLruCache<K, V, S, W>,
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> Iterator
+impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> Iterator
     for CLruCacheIntoIter<K, V, S, W>
 {
     type Item = (K, V);
@@ -899,7 +836,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> Iterator
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> DoubleEndedIterator
+impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> DoubleEndedIterator
     for CLruCacheIntoIter<K, V, S, W>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
@@ -907,7 +844,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> DoubleEndedIterator
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> ExactSizeIterator
+impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> ExactSizeIterator
     for CLruCacheIntoIter<K, V, S, W>
 {
     fn len(&self) -> usize {
@@ -915,7 +852,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> ExactSizeIterator
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> IntoIterator for CLruCache<K, V, S, W> {
+impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> IntoIterator
+    for CLruCache<K, V, S, W>
+{
     type Item = (K, V);
     type IntoIter = CLruCacheIntoIter<K, V, S, W>;
 
@@ -926,7 +865,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> IntoIterator for CLr
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher + Default> FromIterator<(K, V)> for CLruCache<K, V, S> {
+impl<K: Clone + Eq + Hash, V, S: BuildHasher + Default> FromIterator<(K, V)>
+    for CLruCache<K, V, S>
+{
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let cap = NonZeroUsize::new(usize::MAX).unwrap();
         let mut cache = CLruCache::with_hasher(cap, S::default());
@@ -943,7 +884,7 @@ impl<K: Eq + Hash, V, S: BuildHasher + Default> FromIterator<(K, V)> for CLruCac
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher> Extend<(K, V)> for CLruCache<K, V, S> {
+impl<K: Clone + Eq + Hash, V, S: BuildHasher> Extend<(K, V)> for CLruCache<K, V, S> {
     fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
         for (k, v) in iter {
             self.put(k, v);
@@ -2137,7 +2078,7 @@ mod tests {
         cache_is_send::<String, String, RandomState, ZeroWeightScale>();
 
         fn cache_in_mutex<
-            K: Default + Eq + Hash + Send + 'static,
+            K: Clone + Default + Eq + Hash + Send + 'static,
             V: Default + Send + 'static,
             S: BuildHasher + Send + 'static,
             W: WeightScale<K, V> + Send + 'static,
@@ -2188,7 +2129,7 @@ mod tests {
         cache_is_sync::<String, String, RandomState, ZeroWeightScale>();
 
         fn cache_in_rwlock<
-            K: Default + Eq + Hash + Send + Sync + 'static,
+            K: Clone + Default + Eq + Hash + Send + Sync + 'static,
             V: Default + Send + Sync + 'static,
             S: BuildHasher + Send + Sync + 'static,
             W: WeightScale<K, V> + Send + Sync + 'static,
