@@ -118,6 +118,11 @@ impl<T> FixedSizeList<T> {
     }
 
     #[inline]
+    pub(crate) fn back_idx(&self) -> usize {
+        self.back
+    }
+
+    #[inline]
     pub(crate) fn back(&self) -> Option<&T> {
         self.node_ref(self.back).map(|node| &node.data)
     }
@@ -296,6 +301,16 @@ impl<T> FixedSizeList<T> {
             }
             front = next;
         }
+    }
+
+    #[inline]
+    pub(crate) fn move_front(&mut self, idx: usize) -> Option<&mut T> {
+        // TODO: try to optimize this funtion as it is a fairly hot path
+        self.remove(idx).map(|data| {
+            let (new, data) = self.push_front(data).unwrap();
+            debug_assert_eq!(idx, new);
+            data
+        })
     }
 }
 

@@ -478,39 +478,29 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     /// Otherwise, `None` is returned.
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
         match self.lookup.entry(key) {
-            Entry::Occupied(mut occ) => {
-                let old = self.storage.remove(*occ.get());
+            Entry::Occupied(occ) => {
                 // It's fine to unwrap here because:
-                // * the cache capacity is non zero
-                // * the cache cannot be full
-                let (idx, _) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: occ.key().clone(),
-                        value,
-                    })
-                    .unwrap();
-                occ.insert(idx);
-                old.map(|CLruNode { value, .. }| value)
+                // * the entry already exists
+                let node = self.storage.move_front(*occ.get()).unwrap();
+                Some(std::mem::replace(&mut node.value, value))
             }
             Entry::Vacant(vac) => {
-                let mut obsolete_key = None;
+                let key = vac.key().clone();
                 if self.storage.is_full() {
-                    obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
-                }
-                // It's fine to unwrap here because:
-                // * the cache capacity is non zero
-                // * the cache cannot be full
-                let (idx, _) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: vac.key().clone(),
-                        value,
-                    })
-                    .unwrap();
-                vac.insert(idx);
-                if let Some(obsolete_key) = obsolete_key {
+                    let idx = self.storage.back_idx();
+                    // It's fine to unwrap here because:
+                    // * the cache capacity is non zero
+                    // * the cache is full
+                    let node = self.storage.move_front(idx).unwrap();
+                    let obsolete_key = std::mem::replace(node, CLruNode { key, value }).key;
+                    vac.insert(idx);
                     self.lookup.remove(&obsolete_key);
+                } else {
+                    // It's fine to unwrap here because:
+                    // * the cache capacity is non zero
+                    // * the cache is not full
+                    let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    vac.insert(idx);
                 }
                 None
             }
@@ -533,43 +523,34 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         data: T,
     ) -> &mut V {
         match self.lookup.entry(key) {
-            Entry::Occupied(mut occ) => {
-                let node = self.storage.remove(*occ.get()).unwrap();
+            Entry::Occupied(occ) => {
                 // It's fine to unwrap here because:
-                // * the cache capacity is non zero
-                // * the cache cannot be full
-                let (idx, node) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: occ.key().clone(),
-                        value: node.value,
-                    })
-                    .unwrap();
-                occ.insert(idx);
-                modify_op(occ.key(), &mut node.value, data);
+                // * the entry already exists
+                let node = self.storage.move_front(*occ.get()).unwrap();
+                modify_op(&node.key, &mut node.value, data);
                 &mut node.value
             }
             Entry::Vacant(vac) => {
-                let value = put_op(vac.key(), data);
-                let mut obsolete_key = None;
+                let key = vac.key().clone();
+                let value = put_op(&key, data);
                 if self.storage.is_full() {
-                    obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
-                }
-                // It's fine to unwrap here because:
-                // * the cache capacity is non zero
-                // * the cache cannot be full
-                let (idx, node) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: vac.key().clone(),
-                        value,
-                    })
-                    .unwrap();
-                vac.insert(idx);
-                if let Some(obsolete_key) = obsolete_key {
+                    let index = self.storage.back_idx();
+                    // It's fine to unwrap here because:
+                    // * the cache capacity is non zero
+                    // * the cache is full
+                    let node = self.storage.move_front(index).unwrap();
+                    let obsolete_key = std::mem::replace(node, CLruNode { key, value }).key;
+                    vac.insert(index);
                     self.lookup.remove(&obsolete_key);
+                    &mut node.value
+                } else {
+                    // It's fine to unwrap here because:
+                    // * the cache capacity is non zero
+                    // * the cache cannot be full
+                    let (idx, node) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    vac.insert(idx);
+                    &mut node.value
                 }
-                &mut node.value
             }
         }
     }
@@ -597,20 +578,11 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         data: T,
     ) -> Result<&mut V, E> {
         match self.lookup.entry(key) {
-            Entry::Occupied(mut occ) => {
-                let node = self.storage.remove(*occ.get()).unwrap();
+            Entry::Occupied(occ) => {
                 // It's fine to unwrap here because:
-                // * the cache capacity is non zero
-                // * the cache cannot be full
-                let (idx, node) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: occ.key().clone(),
-                        value: node.value,
-                    })
-                    .unwrap();
-                occ.insert(idx);
-                match modify_op(occ.key(), &mut node.value, data) {
+                // * the entry already exists
+                let node = self.storage.move_front(*occ.get()).unwrap();
+                match modify_op(&node.key, &mut node.value, data) {
                     Ok(()) => Ok(&mut node.value),
                     Err(err) => Err(err),
                 }
@@ -620,25 +592,25 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                     Ok(value) => value,
                     Err(err) => return Err(err),
                 };
-                let mut obsolete_key = None;
+                let key = vac.key().clone();
                 if self.storage.is_full() {
-                    obsolete_key = self.storage.pop_back().map(|CLruNode { key, .. }| key);
-                }
-                // It's fine to unwrap here because:
-                // * the cache capacity is non zero
-                // * the cache cannot be full
-                let (idx, node) = self
-                    .storage
-                    .push_front(CLruNode {
-                        key: vac.key().clone(),
-                        value,
-                    })
-                    .unwrap();
-                vac.insert(idx);
-                if let Some(obsolete_key) = obsolete_key {
+                    let idx = self.storage.back_idx();
+                    // It's fine to unwrap here because:
+                    // * the cache capacity is non zero
+                    // * the cache is full
+                    let node = self.storage.move_front(idx).unwrap();
+                    let obsolete_key = std::mem::replace(node, CLruNode { key, value }).key;
+                    vac.insert(idx);
                     self.lookup.remove(&obsolete_key);
+                    Ok(&mut node.value)
+                } else {
+                    // It's fine to unwrap here because:
+                    // * the cache capacity is non zero
+                    // * the cache cannot be full
+                    let (idx, node) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    vac.insert(idx);
+                    Ok(&mut node.value)
                 }
-                Ok(&mut node.value)
             }
         }
     }
