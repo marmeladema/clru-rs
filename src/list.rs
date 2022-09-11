@@ -23,6 +23,7 @@ pub(crate) struct FixedSizeList<T> {
 }
 
 impl<T> FixedSizeList<T> {
+    #[inline]
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -33,6 +34,7 @@ impl<T> FixedSizeList<T> {
         }
     }
 
+    #[inline]
     pub(crate) fn with_memory(capacity: usize, mut reserve: usize) -> Self {
         if reserve > capacity {
             reserve = capacity;
@@ -46,18 +48,22 @@ impl<T> FixedSizeList<T> {
         }
     }
 
+    #[inline]
     pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }
 
+    #[inline]
     pub(crate) fn len(&self) -> usize {
         self.nodes.len() - self.free.len()
     }
 
+    #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[inline]
     pub(crate) fn is_full(&self) -> bool {
         self.len() == self.capacity()
     }
@@ -86,6 +92,7 @@ impl<T> FixedSizeList<T> {
         self.nodes.get(idx).and_then(|node| node.as_ref())
     }
 
+    #[inline]
     pub(crate) fn get(&self, idx: usize) -> Option<&T> {
         self.node_ref(idx).map(|node| &node.data)
     }
@@ -95,22 +102,27 @@ impl<T> FixedSizeList<T> {
         self.nodes.get_mut(idx).and_then(|node| node.as_mut())
     }
 
+    #[inline]
     pub(crate) fn get_mut(&mut self, idx: usize) -> Option<&mut T> {
         self.node_mut(idx).map(|node| &mut node.data)
     }
 
+    #[inline]
     pub(crate) fn front(&self) -> Option<&T> {
         self.node_ref(self.front).map(|node| &node.data)
     }
 
+    #[inline]
     pub(crate) fn front_mut(&mut self) -> Option<&mut T> {
         self.node_mut(self.front).map(|node| &mut node.data)
     }
 
+    #[inline]
     pub(crate) fn back(&self) -> Option<&T> {
         self.node_ref(self.back).map(|node| &node.data)
     }
 
+    #[inline]
     pub(crate) fn back_mut(&mut self) -> Option<&mut T> {
         self.node_mut(self.back).map(|node| &mut node.data)
     }
@@ -150,10 +162,12 @@ impl<T> FixedSizeList<T> {
         Some((idx, &mut self.nodes[idx].as_mut().unwrap().data))
     }
 
+    #[inline]
     pub(crate) fn pop_front(&mut self) -> Option<T> {
         self.remove(self.front)
     }
 
+    #[inline]
     pub(crate) fn pop_back(&mut self) -> Option<T> {
         self.remove(self.back)
     }
@@ -174,6 +188,7 @@ impl<T> FixedSizeList<T> {
         Some(node.data)
     }
 
+    #[inline]
     pub(crate) fn iter(&self) -> FixedSizeListIter<'_, T> {
         FixedSizeListIter {
             list: self,
@@ -183,6 +198,7 @@ impl<T> FixedSizeList<T> {
         }
     }
 
+    #[inline]
     pub(crate) fn iter_mut(&mut self) -> FixedSizeListIterMut<'_, T> {
         let front = self.front;
         let back = self.back;

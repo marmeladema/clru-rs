@@ -233,6 +233,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
     }
 
     /// Returns the number of key-value pairs that are currently in the cache.
+    #[inline]
     pub fn len(&self) -> usize {
         debug_assert_eq!(self.lookup.len(), self.storage.len());
         self.storage.len()
@@ -241,22 +242,26 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
     /// Returns the capacity of the cache. It serves as a limit for
     /// * the number of elements that the cache can hold.
     /// * the total weight of the elements in the cache.
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.storage.capacity()
     }
 
     /// Returns the total weight of the elements in the cache.
+    #[inline]
     pub fn weight(&self) -> usize {
         self.weight
     }
 
     /// Returns a bool indicating whether the cache is empty or not.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         debug_assert_eq!(self.lookup.is_empty(), self.storage.is_empty());
         self.storage.is_empty()
     }
 
     /// Returns a bool indicating whether the cache is full or not.
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.len() + self.weight() == self.capacity()
     }
@@ -415,6 +420,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
     }
 
     /// Clears the contents of the cache.
+    #[inline]
     pub fn clear(&mut self) {
         self.lookup.clear();
         self.storage.clear();
