@@ -357,10 +357,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
         Q: Hash + Eq,
     {
         let idx = *self.lookup.get(key)?;
-        let value = self.storage.remove(idx)?;
-        self.storage
-            .push_front(value)
-            .map(|(_, CLruNode { value, .. })| &*value)
+        self.storage.move_front(idx).map(|node| &node.value)
     }
 
     /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
@@ -639,10 +636,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
         Q: Hash + Eq,
     {
         let idx = *self.lookup.get(key)?;
-        let value = self.storage.remove(idx)?;
-        self.storage
-            .push_front(value)
-            .map(|(_, CLruNode { value, .. })| value)
+        self.storage.move_front(idx).map(|node| &mut node.value)
     }
 
     /// Returns a mutable reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
