@@ -134,37 +134,37 @@ impl<T> FixedSizeList<T> {
 
     pub(crate) fn push_front(&mut self, data: T) -> Option<(usize, &mut T)> {
         let idx = self.next()?;
-        self.nodes[idx] = Some(FixedSizeListNode {
-            prev: usize::MAX,
-            next: self.front,
-            data,
-        });
         if let Some(front) = self.node_mut(self.front) {
             front.prev = idx;
         }
         if self.node_ref(self.back).is_none() {
             self.back = idx;
         }
+        let node = self.nodes.get_mut(idx).unwrap().insert(FixedSizeListNode {
+            prev: usize::MAX,
+            next: self.front,
+            data,
+        });
         self.front = idx;
-        Some((idx, &mut self.nodes[idx].as_mut().unwrap().data))
+        Some((idx, &mut node.data))
     }
 
     #[cfg(test)]
     fn push_back(&mut self, data: T) -> Option<(usize, &mut T)> {
         let idx = self.next()?;
-        self.nodes[idx] = Some(FixedSizeListNode {
-            prev: self.back,
-            next: usize::MAX,
-            data,
-        });
         if let Some(back) = self.node_mut(self.back) {
             back.next = idx;
         }
         if self.node_ref(self.front).is_none() {
             self.front = idx;
         }
+        let node = self.nodes.get_mut(idx).unwrap().insert(FixedSizeListNode {
+            prev: self.back,
+            next: usize::MAX,
+            data,
+        });
         self.back = idx;
-        Some((idx, &mut self.nodes[idx].as_mut().unwrap().data))
+        Some((idx, &mut node.data))
     }
 
     #[inline]
@@ -306,11 +306,32 @@ impl<T> FixedSizeList<T> {
     #[inline]
     pub(crate) fn move_front(&mut self, idx: usize) -> Option<&mut T> {
         // TODO: try to optimize this funtion as it is a fairly hot path
-        self.remove(idx).map(|data| {
-            let (new, data) = self.push_front(data).unwrap();
-            debug_assert_eq!(idx, new);
-            data
-        })
+        let node = self.nodes.get_mut(idx)?.take()?;
+        if let Some(prev) = self.node_mut(node.prev) {
+            prev.next = node.next;
+        } else {
+            self.front = node.next;
+        }
+        if let Some(next) = self.node_mut(node.next) {
+            next.prev = node.prev;
+        } else {
+            self.back = node.prev;
+        }
+
+        if let Some(front) = self.node_mut(self.front) {
+            front.prev = idx;
+        }
+        if self.node_ref(self.back).is_none() {
+            self.back = idx;
+        }
+
+        let node = self.nodes.get_mut(idx).unwrap().insert(FixedSizeListNode {
+            prev: usize::MAX,
+            next: self.front,
+            data: node.data,
+        });
+        self.front = idx;
+        Some(&mut node.data)
     }
 }
 
