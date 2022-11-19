@@ -421,6 +421,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
     pub fn clear(&mut self) {
         self.lookup.clear();
         self.storage.clear();
+        self.weight = 0;
     }
 
     /// Resizes the cache.
