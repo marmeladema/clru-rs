@@ -421,6 +421,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
     pub fn clear(&mut self) {
         self.lookup.clear();
         self.storage.clear();
+        self.weight = 0;
     }
 
     /// Resizes the cache.
@@ -1802,6 +1803,25 @@ mod tests {
         assert_eq!(cache.get(&"pear"), Some(&"green"));
         assert_eq!(cache.get(&"apple"), Some(&"green"));
         assert_eq!(cache.get(&"tomato"), Some(&"red"));
+    }
+
+    #[test]
+    fn test_weighted_clear() {
+        let mut cache = CLruCache::with_config(
+            CLruCacheConfig::new(NonZeroUsize::new(10).unwrap()).with_scale(StrStrScale),
+        );
+
+        assert_eq!(cache.put_with_weight("apple", "red"), Ok(None));
+        assert_eq!(cache.put_with_weight("banana", "yellow"), Ok(None));
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.weight(), 6);
+        assert_eq!(cache.get(&"apple"), None);
+        assert_eq!(cache.get(&"banana"), Some(&"yellow"));
+
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.weight(), 0);
     }
 
     #[derive(Debug)]
