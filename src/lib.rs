@@ -1697,7 +1697,7 @@ mod tests {
         assert_eq!(cache.capacity(), 5);
         assert_eq!(cache.is_full(), false);
 
-        cache.extend(vec![("c", 3), ("d", 4), ("e", 5)].into_iter());
+        cache.extend([("c", 3), ("d", 4), ("e", 5)]);
 
         assert_eq!(cache.len(), 5);
         assert_eq!(cache.capacity(), 5);
