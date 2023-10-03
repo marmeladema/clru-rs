@@ -408,7 +408,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
 
     /// Returns a bool indicating whether the given key is in the cache.
     /// Does not update the LRU list.
-    pub fn contains<Q: ?Sized>(&mut self, key: &Q) -> bool
+    pub fn contains<Q: ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
