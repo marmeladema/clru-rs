@@ -351,20 +351,20 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
 
     /// Returns a reference to the value of the key in the cache or `None` if it is not present in the cache.
     /// Moves the key to the head of the LRU list if it exists.
-    pub fn get<Q: ?Sized>(&mut self, key: &Q) -> Option<&V>
+    pub fn get<Q>(&mut self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         let idx = *self.lookup.get(key)?;
         self.storage.move_front(idx).map(|node| &node.value)
     }
 
     /// Removes and returns the value corresponding to the key from the cache or `None` if it does not exist.
-    pub fn pop<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
+    pub fn pop<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         let idx = self.lookup.remove(key)?;
         self.storage.remove(idx).map(|CLruNode { key, value, .. }| {
@@ -397,10 +397,10 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
 
     /// Returns a reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
     /// Unlike `get`, `peek` does not update the LRU list so the key's position will be unchanged.
-    pub fn peek<Q: ?Sized>(&self, key: &Q) -> Option<&V>
+    pub fn peek<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         let idx = *self.lookup.get(key)?;
         self.storage.get(idx).map(|node| &node.value)
@@ -408,10 +408,10 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
 
     /// Returns a bool indicating whether the given key is in the cache.
     /// Does not update the LRU list.
-    pub fn contains<Q: ?Sized>(&mut self, key: &Q) -> bool
+    pub fn contains<Q>(&mut self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         self.peek(key).is_some()
     }
@@ -631,10 +631,10 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Returns a mutable reference to the value of the key in the cache or `None` if it is not present in the cache.
     /// Moves the key to the head of the LRU list if it exists.
-    pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         let idx = *self.lookup.get(key)?;
         self.storage.move_front(idx).map(|node| &mut node.value)
@@ -642,10 +642,10 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
 
     /// Returns a mutable reference to the value corresponding to the key in the cache or `None` if it is not present in the cache.
     /// Unlike `get_mut`, `peek_mut` does not update the LRU list so the key's position will be unchanged.
-    pub fn peek_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    pub fn peek_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         let idx = *self.lookup.get(key)?;
         self.storage.get_mut(idx).map(|node| &mut node.value)
