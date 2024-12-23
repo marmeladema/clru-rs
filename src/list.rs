@@ -343,7 +343,7 @@ pub(crate) struct FixedSizeListIter<'a, T> {
     len: usize,
 }
 
-impl<'a, T> Clone for FixedSizeListIter<'a, T> {
+impl<T> Clone for FixedSizeListIter<'_, T> {
     fn clone(&self) -> Self {
         Self {
             list: self.list,
@@ -374,7 +374,7 @@ impl<'a, T> Iterator for FixedSizeListIter<'a, T> {
     }
 }
 
-impl<'a, T> DoubleEndedIterator for FixedSizeListIter<'a, T> {
+impl<T> DoubleEndedIterator for FixedSizeListIter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len > 0 {
             let back = self.back;
@@ -388,7 +388,7 @@ impl<'a, T> DoubleEndedIterator for FixedSizeListIter<'a, T> {
     }
 }
 
-impl<'a, T> ExactSizeIterator for FixedSizeListIter<'a, T> {
+impl<T> ExactSizeIterator for FixedSizeListIter<'_, T> {
     fn len(&self) -> usize {
         self.size_hint().0
     }
@@ -454,7 +454,7 @@ impl<'a, T> Iterator for FixedSizeListIterMut<'a, T> {
     }
 }
 
-impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
+impl<T> DoubleEndedIterator for FixedSizeListIterMut<'_, T> {
     #[allow(unsafe_code)]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len > 0 {
@@ -481,7 +481,7 @@ impl<'a, T> DoubleEndedIterator for FixedSizeListIterMut<'a, T> {
     }
 }
 
-impl<'a, T> ExactSizeIterator for FixedSizeListIterMut<'a, T> {
+impl<T> ExactSizeIterator for FixedSizeListIterMut<'_, T> {
     fn len(&self) -> usize {
         self.size_hint().0
     }

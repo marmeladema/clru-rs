@@ -710,7 +710,7 @@ impl<'a, K, V> Iterator for CLruCacheIter<'a, K, V> {
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for CLruCacheIter<'a, K, V> {
+impl<K, V> DoubleEndedIterator for CLruCacheIter<'_, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
@@ -718,7 +718,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIter<'a, K, V> {
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for CLruCacheIter<'a, K, V> {
+impl<K, V> ExactSizeIterator for CLruCacheIter<'_, K, V> {
     fn len(&self) -> usize {
         self.iter.len()
     }
@@ -759,7 +759,7 @@ impl<'a, K, V> Iterator for CLruCacheIterMut<'a, K, V> {
     }
 }
 
-impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
+impl<K, V> DoubleEndedIterator for CLruCacheIterMut<'_, K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter
             .next_back()
@@ -767,7 +767,7 @@ impl<'a, K, V> DoubleEndedIterator for CLruCacheIterMut<'a, K, V> {
     }
 }
 
-impl<'a, K, V> ExactSizeIterator for CLruCacheIterMut<'a, K, V> {
+impl<K, V> ExactSizeIterator for CLruCacheIterMut<'_, K, V> {
     fn len(&self) -> usize {
         self.iter.len()
     }
