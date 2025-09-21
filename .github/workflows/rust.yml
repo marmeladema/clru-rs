@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - uses: hecrj/setup-rust-action@v1
+    - uses: actions/checkout@v4
+    - uses: hecrj/setup-rust-action@v2
       with:
         rust-version: stable
         components: clippy,rustfmt
@@ -42,8 +42,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
-      - uses: hecrj/setup-rust-action@v1
+      - uses: actions/checkout@v4
+      - uses: hecrj/setup-rust-action@v2
         with:
           rust-version: nightly
           components: miri
@@ -60,8 +60,8 @@ jobs:
         sanitizer: [address, memory, thread, leak]
 
     steps:
-    - uses: actions/checkout@v2
-    - uses: hecrj/setup-rust-action@v1
+    - uses: actions/checkout@v4
+    - uses: hecrj/setup-rust-action@v2
       with:
         rust-version: nightly
         components: rust-src
