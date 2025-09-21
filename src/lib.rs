@@ -586,10 +586,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
                 }
             }
             Entry::Vacant(vac) => {
-                let value = match put_op(vac.key(), data) {
-                    Ok(value) => value,
-                    Err(err) => return Err(err),
-                };
+                let value = put_op(vac.key(), data)?;
                 let key = vac.key().clone();
                 if self.storage.is_full() {
                     let idx = self.storage.back_idx();
@@ -870,22 +867,14 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> Extend<(K, V)> for CLruCache<K, V,
 mod tests {
     use super::*;
 
-    #[allow(unsafe_code)]
-    const ONE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
-    #[allow(unsafe_code)]
-    const TWO: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2) };
-    #[allow(unsafe_code)]
-    const THREE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(3) };
-    #[allow(unsafe_code)]
-    const FOUR: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
-    #[allow(unsafe_code)]
-    const FIVE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5) };
-    #[allow(unsafe_code)]
-    const SIX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(6) };
-    #[allow(unsafe_code)]
-    const HEIGHT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8) };
-    #[allow(unsafe_code)]
-    const MANY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(200) };
+    const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
+    const TWO: NonZeroUsize = NonZeroUsize::new(2).unwrap();
+    const THREE: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+    const FOUR: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+    const FIVE: NonZeroUsize = NonZeroUsize::new(5).unwrap();
+    const SIX: NonZeroUsize = NonZeroUsize::new(6).unwrap();
+    const HEIGHT: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+    const MANY: NonZeroUsize = NonZeroUsize::new(200).unwrap();
 
     #[test]
     fn test_insert_and_get() {
@@ -1609,7 +1598,7 @@ mod tests {
         let mut cache = CLruCache::new(TWO);
 
         let put = |_: &&str, value: usize| {
-            if value % 2 == 0 {
+            if value.is_multiple_of(2) {
                 Ok(value)
             } else {
                 Err(value)
@@ -1617,7 +1606,7 @@ mod tests {
         };
 
         let modify = |_: &&str, old: &mut usize, new: usize| {
-            if new % 2 == 0 {
+            if new.is_multiple_of(2) {
                 *old = new;
                 Ok(())
             } else {
