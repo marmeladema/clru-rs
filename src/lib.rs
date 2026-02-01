@@ -106,9 +106,9 @@ use crate::list::{FixedSizeList, FixedSizeListIter, FixedSizeListIterMut};
 pub use crate::weight::*;
 
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::RandomState;
-use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FromIterator;
 use std::num::NonZeroUsize;
@@ -448,7 +448,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K,
     {
         self.storage.retain(
             #[inline]
-            |CLruNode { ref key, ref value }| {
+            |CLruNode { key, value }| {
                 if f(key, value) {
                     true
                 } else {
@@ -656,10 +656,7 @@ impl<K: Clone + Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     {
         self.storage.retain_mut(
             #[inline]
-            |CLruNode {
-                 ref key,
-                 ref mut value,
-             }| {
+            |CLruNode { key, value }| {
                 if f(key, value) {
                     true
                 } else {
@@ -1547,7 +1544,7 @@ mod tests {
 
     #[test]
     fn test_panic_in_put_or_modify() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
         let mut cache = CLruCache::new(TWO);
 
@@ -1568,10 +1565,12 @@ mod tests {
 
         // A panic in the modify closure will move the
         // key at the top of the cache.
-        assert!(catch_unwind(AssertUnwindSafe(|| {
-            cache.put_or_modify("a", put, modify, 7);
-        }))
-        .is_err());
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                cache.put_or_modify("a", put, modify, 7);
+            }))
+            .is_err()
+        );
 
         let mut iter = cache.iter();
         assert_eq!(iter.next(), Some((&"a", &3)));
@@ -1582,10 +1581,12 @@ mod tests {
 
         // A panic in the put closure won't have any
         // any impact on the cache.
-        assert!(catch_unwind(AssertUnwindSafe(|| {
-            cache.put_or_modify("c", put, modify, 7);
-        }))
-        .is_err());
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                cache.put_or_modify("c", put, modify, 7);
+            }))
+            .is_err()
+        );
 
         let mut iter = cache.iter();
         assert_eq!(iter.next(), Some((&"a", &3)));
