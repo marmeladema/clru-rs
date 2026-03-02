@@ -118,6 +118,11 @@ impl<T> FixedSizeList<T> {
     }
 
     #[inline]
+    pub(crate) fn front_idx(&self) -> usize {
+        self.front
+    }
+
+    #[inline]
     pub(crate) fn back_idx(&self) -> usize {
         self.back
     }
@@ -170,11 +175,6 @@ impl<T> FixedSizeList<T> {
     #[inline]
     pub(crate) fn pop_front(&mut self) -> Option<T> {
         self.remove(self.front)
-    }
-
-    #[inline]
-    pub(crate) fn pop_back(&mut self) -> Option<T> {
-        self.remove(self.back)
     }
 
     pub(crate) fn remove(&mut self, idx: usize) -> Option<T> {
@@ -275,13 +275,13 @@ impl<T> FixedSizeList<T> {
 
     pub(crate) fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(&T) -> bool,
+        F: FnMut(usize, &T) -> bool,
     {
         let mut front = self.front;
         while front != usize::MAX {
             let node = self.node_ref(front).unwrap();
             let next = node.next;
-            if !f(&node.data) {
+            if !f(front, &node.data) {
                 self.remove(front);
             }
             front = next;
@@ -290,13 +290,13 @@ impl<T> FixedSizeList<T> {
 
     pub(crate) fn retain_mut<F>(&mut self, mut f: F)
     where
-        F: FnMut(&mut T) -> bool,
+        F: FnMut(usize, &mut T) -> bool,
     {
         let mut front = self.front;
         while front != usize::MAX {
             let node = self.node_mut(front).unwrap();
             let next = node.next;
-            if !f(&mut node.data) {
+            if !f(front, &mut node.data) {
                 self.remove(front);
             }
             front = next;
