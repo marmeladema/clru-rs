@@ -102,6 +102,7 @@ use crate::list::{FixedSizeList, FixedSizeListIter, FixedSizeListIterMut};
 pub use crate::weight::*;
 
 use hashbrown::HashTable;
+use hashbrown::hash_table::Entry;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
@@ -302,56 +303,98 @@ impl<K: Eq + Hash, V, S: BuildHasher, W: WeightScale<K, V>> CLruCache<K, V, S, W
         }
         let hash = self.hash_builder.hash_one(&key);
 
-        // Check if key already exists
-        // unwrap: lookup ↔ storage invariant (see struct doc)
-        if let Some(&idx) = self
-            .lookup
-            .find(hash, |&idx| self.storage.get(idx).unwrap().key == key)
-        {
-            // Remove old entry from storage and table
-            // unwrap: idx was just found in both lookup and storage
-            let old = self.storage.remove(idx).unwrap();
-            self.lookup
-                .find_entry(hash, |&i| i == idx)
+        // Inline eviction helper — evicts the LRU entry using an explicit table
+        // reference, since the entry API borrows self.lookup.
+        let evict_with = |table: &mut HashTable<usize>,
+                          storage: &mut FixedSizeList<CLruNode<K, V>>,
+                          hash_builder: &S,
+                          scale: &W,
+                          weight: &mut usize| {
+            let back_idx = storage.back_idx();
+            debug_assert_ne!(back_idx, usize::MAX);
+            // unwrap: back_idx is valid (list is non-empty)
+            let back_hash = hash_builder.hash_one(&storage.get(back_idx).unwrap().key);
+            // unwrap: lookup ↔ storage invariant
+            table
+                .find_entry(back_hash, |&i| i == back_idx)
                 .unwrap()
                 .remove();
-            self.weight -= self.scale.weight(&old.key, &old.value);
+            // unwrap: back_idx is a valid live entry
+            let CLruNode { key, value } = storage.remove(back_idx).unwrap();
+            *weight -= scale.weight(&key, &value);
+        };
 
-            // Evict until there's room
-            while self.storage.len() + self.weight + new_weight >= self.storage.capacity() {
-                self.evict_back();
-            }
-
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache cannot be full
-            // inner unwrap: lookup ↔ storage invariant
-            let (new_idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
-            self.lookup.insert_unique(hash, new_idx, |&i| {
+        // unwrap inside closures: lookup ↔ storage invariant (see struct doc)
+        match self.lookup.entry(
+            hash,
+            |&idx| self.storage.get(idx).unwrap().key == key,
+            |&i| {
                 self.hash_builder
                     .hash_one(&self.storage.get(i).unwrap().key)
-            });
-            self.weight += new_weight;
+            },
+        ) {
+            Entry::Occupied(entry) => {
+                // Single probe: entry() found and remove() evicts in one shot.
+                let (idx, vacant) = entry.remove();
+                // unwrap: idx was just in the table, so it's a valid storage entry
+                let old = self.storage.remove(idx).unwrap();
+                self.weight -= self.scale.weight(&old.key, &old.value);
 
-            Ok(Some(old.value))
-        } else {
-            // Key not found ��� evict until there's room
-            while self.storage.len() + self.weight + new_weight >= self.storage.capacity() {
-                self.evict_back();
+                // Evict until there's room
+                let table = vacant.into_table();
+                while self.storage.len() + self.weight + new_weight >= self.storage.capacity() {
+                    evict_with(
+                        table,
+                        &mut self.storage,
+                        &self.hash_builder,
+                        &self.scale,
+                        &mut self.weight,
+                    );
+                }
+
+                // unwrap: cache capacity is non-zero and we just made room
+                // inner unwrap: lookup ↔ storage invariant
+                let (new_idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                table.insert_unique(hash, new_idx, |&i| {
+                    self.hash_builder
+                        .hash_one(&self.storage.get(i).unwrap().key)
+                });
+                self.weight += new_weight;
+
+                Ok(Some(old.value))
             }
+            Entry::Vacant(entry) => {
+                if self.storage.len() + self.weight + new_weight < self.storage.capacity() {
+                    // No eviction needed: single probe via entry()
+                    // unwrap: cache capacity is non-zero and there is room
+                    let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    entry.insert(idx);
+                    self.weight += new_weight;
+                } else {
+                    // Eviction needed: give up the vacant slot
+                    let table = entry.into_table();
+                    while self.storage.len() + self.weight + new_weight >= self.storage.capacity() {
+                        evict_with(
+                            table,
+                            &mut self.storage,
+                            &self.hash_builder,
+                            &self.scale,
+                            &mut self.weight,
+                        );
+                    }
 
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache cannot be full
-            // inner unwrap: lookup ↔ storage invariant
-            let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
-            self.lookup.insert_unique(hash, idx, |&i| {
-                self.hash_builder
-                    .hash_one(&self.storage.get(i).unwrap().key)
-            });
-            self.weight += new_weight;
+                    // unwrap: cache capacity is non-zero and we just made room
+                    // inner unwrap: lookup ↔ storage invariant
+                    let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    table.insert_unique(hash, idx, |&i| {
+                        self.hash_builder
+                            .hash_one(&self.storage.get(i).unwrap().key)
+                    });
+                    self.weight += new_weight;
+                }
 
-            Ok(None)
+                Ok(None)
+            }
         }
     }
 
@@ -557,55 +600,55 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     pub fn put(&mut self, key: K, value: V) -> Option<V> {
         let hash = self.hash_builder.hash_one(&key);
 
-        // Check if key already exists
-        // unwrap: lookup ↔ storage invariant (see struct doc)
-        if let Some(&idx) = self
-            .lookup
-            .find(hash, |&idx| self.storage.get(idx).unwrap().key == key)
-        {
-            // It's fine to unwrap here because:
-            // * the entry already exists
-            let node = self.storage.move_front(idx).unwrap();
-            return Some(std::mem::replace(&mut node.value, value));
-        }
-
-        // Key not found
-        if self.storage.is_full() {
-            let back_idx = self.storage.back_idx();
-            // unwrap: back_idx is valid (cache is full, so list is non-empty)
-            let old_hash = self
-                .hash_builder
-                .hash_one(&self.storage.get(back_idx).unwrap().key);
-            // unwrap: lookup ↔ storage invariant (see struct doc)
-            self.lookup
-                .find_entry(old_hash, |&i| i == back_idx)
-                .unwrap()
-                .remove();
-
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache is full
-            let node = self.storage.move_front(back_idx).unwrap();
-            *node = CLruNode { key, value };
-
-            // Insert new entry into lookup
-            // inner unwrap: lookup ↔ storage invariant
-            self.lookup.insert_unique(hash, back_idx, |&i| {
+        // unwrap inside closures: lookup ↔ storage invariant (see struct doc)
+        match self.lookup.entry(
+            hash,
+            |&idx| self.storage.get(idx).unwrap().key == key,
+            |&i| {
                 self.hash_builder
                     .hash_one(&self.storage.get(i).unwrap().key)
-            });
-        } else {
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache is not full
-            // inner unwrap: lookup ↔ storage invariant
-            let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
-            self.lookup.insert_unique(hash, idx, |&i| {
-                self.hash_builder
-                    .hash_one(&self.storage.get(i).unwrap().key)
-            });
+            },
+        ) {
+            Entry::Occupied(entry) => {
+                let &idx = entry.get();
+                // unwrap: the entry exists in storage
+                let node = self.storage.move_front(idx).unwrap();
+                Some(std::mem::replace(&mut node.value, value))
+            }
+            Entry::Vacant(entry) => {
+                if self.storage.is_full() {
+                    // Cache is full: give up the vacant slot, evict, then re-insert.
+                    let table = entry.into_table();
+                    let back_idx = self.storage.back_idx();
+                    // unwrap: back_idx is valid (cache is full, so list is non-empty)
+                    let old_hash = self
+                        .hash_builder
+                        .hash_one(&self.storage.get(back_idx).unwrap().key);
+                    // unwrap: lookup ↔ storage invariant
+                    table
+                        .find_entry(old_hash, |&i| i == back_idx)
+                        .unwrap()
+                        .remove();
+
+                    // unwrap: cache capacity is non-zero and cache is full
+                    let node = self.storage.move_front(back_idx).unwrap();
+                    *node = CLruNode { key, value };
+
+                    // Re-probe to insert (unavoidable — eviction invalidated the vacant slot)
+                    // inner unwrap: lookup ↔ storage invariant
+                    table.insert_unique(hash, back_idx, |&i| {
+                        self.hash_builder
+                            .hash_one(&self.storage.get(i).unwrap().key)
+                    });
+                } else {
+                    // unwrap: cache capacity is non-zero and cache is not full
+                    let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    // Single probe: reuse the slot found by entry()
+                    entry.insert(idx);
+                }
+                None
+            }
         }
-        None
     }
 
     /// Puts a new key-value pair or modify an already existing value.
@@ -625,60 +668,62 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     ) -> &mut V {
         let hash = self.hash_builder.hash_one(&key);
 
-        // Check if key already exists
-        // unwrap: lookup ↔ storage invariant (see struct doc)
-        if let Some(&idx) = self
-            .lookup
-            .find(hash, |&idx| self.storage.get(idx).unwrap().key == key)
-        {
-            // It's fine to unwrap here because:
-            // * the entry already exists
-            let node = self.storage.move_front(idx).unwrap();
-            modify_op(&node.key, &mut node.value, data);
-            return &mut node.value;
-        }
-
-        // Key not found: compute value
-        let value = put_op(&key, data);
-
-        if self.storage.is_full() {
-            let back_idx = self.storage.back_idx();
-            // unwrap: back_idx is valid (cache is full, so list is non-empty)
-            let old_hash = self
-                .hash_builder
-                .hash_one(&self.storage.get(back_idx).unwrap().key);
-            // unwrap: lookup ↔ storage invariant (see struct doc)
-            self.lookup
-                .find_entry(old_hash, |&i| i == back_idx)
-                .unwrap()
-                .remove();
-
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache is full
-            let node = self.storage.move_front(back_idx).unwrap();
-            *node = CLruNode { key, value };
-
-            // inner unwrap: lookup ↔ storage invariant
-            self.lookup.insert_unique(hash, back_idx, |&i| {
+        // unwrap inside closures: lookup ↔ storage invariant (see struct doc)
+        match self.lookup.entry(
+            hash,
+            |&idx| self.storage.get(idx).unwrap().key == key,
+            |&i| {
                 self.hash_builder
                     .hash_one(&self.storage.get(i).unwrap().key)
-            });
+            },
+        ) {
+            Entry::Occupied(entry) => {
+                let &idx = entry.get();
+                // unwrap: the entry exists in storage
+                let node = self.storage.move_front(idx).unwrap();
+                modify_op(&node.key, &mut node.value, data);
+                &mut node.value
+            }
+            Entry::Vacant(entry) => {
+                // Key not found: compute value
+                let value = put_op(&key, data);
 
-            // unwrap: back_idx was just moved to front, still a valid live entry
-            &mut self.storage.get_mut(back_idx).unwrap().value
-        } else {
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache cannot be full
-            // inner unwrap: lookup ↔ storage invariant
-            let (idx, _node) = self.storage.push_front(CLruNode { key, value }).unwrap();
-            self.lookup.insert_unique(hash, idx, |&i| {
-                self.hash_builder
-                    .hash_one(&self.storage.get(i).unwrap().key)
-            });
-            // unwrap: idx was just inserted above
-            &mut self.storage.get_mut(idx).unwrap().value
+                if self.storage.is_full() {
+                    // Cache is full: give up the vacant slot, evict, then re-insert.
+                    let table = entry.into_table();
+                    let back_idx = self.storage.back_idx();
+                    // unwrap: back_idx is valid (cache is full, so list is non-empty)
+                    let old_hash = self
+                        .hash_builder
+                        .hash_one(&self.storage.get(back_idx).unwrap().key);
+                    // unwrap: lookup ↔ storage invariant
+                    table
+                        .find_entry(old_hash, |&i| i == back_idx)
+                        .unwrap()
+                        .remove();
+
+                    // unwrap: cache capacity is non-zero and cache is full
+                    let node = self.storage.move_front(back_idx).unwrap();
+                    *node = CLruNode { key, value };
+
+                    // Re-probe to insert (unavoidable — eviction invalidated the vacant slot)
+                    // inner unwrap: lookup ↔ storage invariant
+                    table.insert_unique(hash, back_idx, |&i| {
+                        self.hash_builder
+                            .hash_one(&self.storage.get(i).unwrap().key)
+                    });
+
+                    // unwrap: back_idx was just moved to front, still a valid live entry
+                    &mut self.storage.get_mut(back_idx).unwrap().value
+                } else {
+                    // unwrap: cache capacity is non-zero and cache is not full
+                    let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    // Single probe: reuse the slot found by entry()
+                    entry.insert(idx);
+                    // unwrap: idx was just inserted above
+                    &mut self.storage.get_mut(idx).unwrap().value
+                }
+            }
         }
     }
 
@@ -706,62 +751,63 @@ impl<K: Eq + Hash, V, S: BuildHasher> CLruCache<K, V, S> {
     ) -> Result<&mut V, E> {
         let hash = self.hash_builder.hash_one(&key);
 
-        // Check if key already exists
-        // unwrap: lookup ↔ storage invariant (see struct doc)
-        if let Some(&idx) = self
-            .lookup
-            .find(hash, |&idx| self.storage.get(idx).unwrap().key == key)
-        {
-            // It's fine to unwrap here because:
-            // * the entry already exists
-            let node = self.storage.move_front(idx).unwrap();
-            match modify_op(&node.key, &mut node.value, data) {
-                Ok(()) => return Ok(&mut node.value),
-                Err(err) => return Err(err),
+        // unwrap inside closures: lookup ↔ storage invariant (see struct doc)
+        match self.lookup.entry(
+            hash,
+            |&idx| self.storage.get(idx).unwrap().key == key,
+            |&i| {
+                self.hash_builder
+                    .hash_one(&self.storage.get(i).unwrap().key)
+            },
+        ) {
+            Entry::Occupied(entry) => {
+                let &idx = entry.get();
+                // unwrap: the entry exists in storage
+                let node = self.storage.move_front(idx).unwrap();
+                modify_op(&node.key, &mut node.value, data)?;
+                Ok(&mut node.value)
             }
-        }
+            Entry::Vacant(entry) => {
+                // Key not found: compute value (may fail).
+                // If put_op fails, the VacantEntry is dropped and the table is unchanged.
+                let value = put_op(&key, data)?;
 
-        // Key not found: compute value (may fail)
-        let value = put_op(&key, data)?;
+                if self.storage.is_full() {
+                    // Cache is full: give up the vacant slot, evict, then re-insert.
+                    let table = entry.into_table();
+                    let back_idx = self.storage.back_idx();
+                    // unwrap: back_idx is valid (cache is full, so list is non-empty)
+                    let old_hash = self
+                        .hash_builder
+                        .hash_one(&self.storage.get(back_idx).unwrap().key);
+                    // unwrap: lookup ↔ storage invariant
+                    table
+                        .find_entry(old_hash, |&i| i == back_idx)
+                        .unwrap()
+                        .remove();
 
-        if self.storage.is_full() {
-            let back_idx = self.storage.back_idx();
-            // unwrap: back_idx is valid (cache is full, so list is non-empty)
-            let old_hash = self
-                .hash_builder
-                .hash_one(&self.storage.get(back_idx).unwrap().key);
-            // unwrap: lookup ↔ storage invariant (see struct doc)
-            self.lookup
-                .find_entry(old_hash, |&i| i == back_idx)
-                .unwrap()
-                .remove();
+                    // unwrap: cache capacity is non-zero and cache is full
+                    let node = self.storage.move_front(back_idx).unwrap();
+                    *node = CLruNode { key, value };
 
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache is full
-            let node = self.storage.move_front(back_idx).unwrap();
-            *node = CLruNode { key, value };
+                    // Re-probe to insert (unavoidable — eviction invalidated the vacant slot)
+                    // inner unwrap: lookup ↔ storage invariant
+                    table.insert_unique(hash, back_idx, |&i| {
+                        self.hash_builder
+                            .hash_one(&self.storage.get(i).unwrap().key)
+                    });
 
-            // inner unwrap: lookup ↔ storage invariant
-            self.lookup.insert_unique(hash, back_idx, |&i| {
-                self.hash_builder
-                    .hash_one(&self.storage.get(i).unwrap().key)
-            });
-
-            // unwrap: back_idx was just moved to front, still a valid live entry
-            Ok(&mut self.storage.get_mut(back_idx).unwrap().value)
-        } else {
-            // It's fine to unwrap here because:
-            // * the cache capacity is non zero
-            // * the cache cannot be full
-            // inner unwrap: lookup ↔ storage invariant
-            let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
-            self.lookup.insert_unique(hash, idx, |&i| {
-                self.hash_builder
-                    .hash_one(&self.storage.get(i).unwrap().key)
-            });
-            // unwrap: idx was just inserted above
-            Ok(&mut self.storage.get_mut(idx).unwrap().value)
+                    // unwrap: back_idx was just moved to front, still a valid live entry
+                    Ok(&mut self.storage.get_mut(back_idx).unwrap().value)
+                } else {
+                    // unwrap: cache capacity is non-zero and cache is not full
+                    let (idx, _) = self.storage.push_front(CLruNode { key, value }).unwrap();
+                    // Single probe: reuse the slot found by entry()
+                    entry.insert(idx);
+                    // unwrap: idx was just inserted above
+                    Ok(&mut self.storage.get_mut(idx).unwrap().value)
+                }
+            }
         }
     }
 
