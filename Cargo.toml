@@ -10,4 +10,4 @@ license = "MIT"
 keywords = ["lru", "cache", "hashmap"]
 
 [dependencies]
-hashbrown = "0.16"
+hashbrown = "0.17"
